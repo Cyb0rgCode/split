@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { AnalyzeRequest, Finding } from "@/lib/types";
+import { pickBestResult, searchWeb } from "@/lib/search";
 
 export const maxDuration = 30;
 
@@ -11,6 +12,7 @@ Your job is to flag ONLY two kinds of things in the NEW text:
    - Only flag checkable, concrete claims (numbers, dates, events, laws, science). Never flag opinions, predictions, values, or hyperbole/figures of speech.
    - Give the correct claim or statistic, stated plainly.
    - Cite a real, well-known authoritative source (e.g. WHO, BLS, US Census Bureau, NASA, peer-reviewed bodies, official statistics agencies) with a plausible canonical URL for that organization (e.g. https://www.who.int, https://www.bls.gov). Never invent an organization.
+   - Provide a short "search_query" (3-8 words) that a web search could use to verify the correct figure — the app runs this search to attach a live source.
    - verdict must be "false", "misleading", or "unverifiable". Only use "unverifiable" for suspicious-sounding statistics that cannot be confirmed — and even then, only if flagging it genuinely helps the debate.
 
 2. FALLACIES — a clear logical fallacy or personal attack, e.g. ad hominem, straw man, false dilemma, slippery slope, whataboutism, appeal to fear, hasty generalization, red herring, circular reasoning, appeal to authority, tu quoque.
@@ -21,7 +23,7 @@ Be very conservative: most slices of ordinary conversation contain NOTHING to fl
 
 Respond with JSON only, matching this schema:
 {"findings": [
-  {"type": "fact_check", "quote": string, "verdict": "false"|"misleading"|"unverifiable", "correction": string, "source_name": string, "source_url": string},
+  {"type": "fact_check", "quote": string, "verdict": "false"|"misleading"|"unverifiable", "correction": string, "source_name": string, "source_url": string, "search_query": string},
   {"type": "fallacy", "fallacy_name": string, "quote": string, "explanation": string}
 ]}`;
 
@@ -49,6 +51,7 @@ const GEMINI_RESPONSE_SCHEMA = {
           correction: { type: "STRING" },
           source_name: { type: "STRING" },
           source_url: { type: "STRING" },
+          search_query: { type: "STRING" },
           fallacy_name: { type: "STRING" },
           explanation: { type: "STRING" },
         },
@@ -154,6 +157,8 @@ function sanitizeFindings(raw: unknown): Finding[] {
           typeof f.source_url === "string" && /^https?:\/\//.test(f.source_url.trim())
             ? f.source_url.trim()
             : "",
+        search_query:
+          typeof f.search_query === "string" ? f.search_query.trim() : undefined,
       });
     } else if (f.type === "fallacy") {
       if (typeof f.fallacy_name !== "string" || !f.fallacy_name.trim()) continue;
@@ -166,6 +171,26 @@ function sanitizeFindings(raw: unknown): Finding[] {
     }
   }
   return findings.slice(0, 6);
+}
+
+/**
+ * Replace each fact-check's model-remembered source with a live web search
+ * result. Best-effort: on search failure the model's citation is kept, and
+ * the internal search_query is dropped from the response either way.
+ */
+async function attachLiveSources(findings: Finding[]): Promise<void> {
+  await Promise.all(
+    findings.map(async (f) => {
+      if (f.type !== "fact_check") return;
+      const query = f.search_query || f.correction;
+      delete f.search_query;
+      const results = await searchWeb(query.slice(0, 200));
+      if (!results) return;
+      const best = pickBestResult(results);
+      f.source_name = best.title.slice(0, 120);
+      f.source_url = best.url;
+    })
+  );
 }
 
 export async function POST(req: NextRequest) {
@@ -203,6 +228,7 @@ export async function POST(req: NextRequest) {
       : await callNvidiaNim(chunk, context);
     const parsed = extractJson(raw);
     const findings = sanitizeFindings(parsed?.findings);
+    await attachLiveSources(findings);
     return NextResponse.json({
       findings,
       provider: hasGemini ? "gemini" : "nvidia-nim",

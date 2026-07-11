@@ -7,6 +7,8 @@ export interface FactCheckFinding {
   correction: string;
   source_name: string;
   source_url: string;
+  /** Query the model suggests for verifying the correction via web search. */
+  search_query?: string;
 }
 
 export interface FallacyFinding {

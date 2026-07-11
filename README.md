@@ -21,7 +21,10 @@ No alerts means the debate is clean. Better debates for both sides.
 3. The route asks **Google Gemini** (or **NVIDIA NIM**) — both have free
    tiers — to flag only clear-cut false claims and fallacies, and returns
    structured JSON.
-4. New findings pop up as cards with a chime and vibration. A **Flip** button
+4. Each flagged claim is then run through a **live web search** (Tavily,
+   Brave Search, or the keyless Wikipedia API) so the cited source is a real,
+   current result — not the model's memory.
+5. New findings pop up as cards with a chime and vibration. A **Flip** button
    rotates the feed 180° so the person across the table can read it too.
 
 ## Setup
@@ -41,6 +44,20 @@ Set **one** provider in `.env.local`:
 
 Gemini is used if both are set. Override the model with `GEMINI_MODEL` /
 `NVIDIA_NIM_MODEL` if you like.
+
+### Web search for sources (optional, free)
+
+Fact-check cards link to a live web search result. Out of the box this uses
+the **keyless Wikipedia search API** — no signup at all. For broader,
+higher-quality sources add one of:
+
+| Variable | Free tier |
+| --- | --- |
+| `TAVILY_API_KEY` | 1,000 credits/month — [tavily.com](https://tavily.com) |
+| `BRAVE_SEARCH_API_KEY` | 2,000 queries/month — [brave.com/search/api](https://brave.com/search/api) |
+
+Tavily is preferred if both are set; anything that fails falls back down the
+chain (Tavily → Brave → Wikipedia).
 
 Open `http://localhost:3000`, allow microphone access, press
 **Start listening**, and start arguing.
@@ -63,7 +80,8 @@ Open `http://localhost:3000`, allow microphone access, press
 - The AI is prompted to be **conservative**: opinions, predictions, and
   hyperbole are never flagged — only concrete, checkable claims and clear-cut
   fallacies.
-- Sources are cited from well-known authoritative organizations; still, treat
-  them as a starting point and verify anything that matters.
+- Sources come from a live web search (authoritative domains are preferred
+  when picking the result to cite); still, treat them as a starting point and
+  verify anything that matters.
 - Speech recognition quality depends on the device mic, distance, and
   crosstalk — put the phone roughly equidistant between both speakers.
