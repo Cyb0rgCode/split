@@ -61,7 +61,7 @@ const GEMINI_RESPONSE_SCHEMA = {
 
 async function callGemini(chunk: string, context?: string): Promise<string> {
   const key = process.env.GEMINI_API_KEY!;
-  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {

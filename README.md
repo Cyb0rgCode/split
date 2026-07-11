@@ -36,7 +36,7 @@ Set **one** provider in `.env.local`:
 
 | Variable | Where to get it | Default model |
 | --- | --- | --- |
-| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free) | `gemini-2.0-flash` |
+| `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free) | `gemini-3.1-flash-lite` |
 | `NVIDIA_NIM_API_KEY` | [build.nvidia.com](https://build.nvidia.com) (free credits) | `meta/llama-3.3-70b-instruct` |
 
 Gemini is used if both are set. Override the model with `GEMINI_MODEL` /
