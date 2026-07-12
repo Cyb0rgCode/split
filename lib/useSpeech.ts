@@ -48,7 +48,16 @@ export interface UseSpeechResult {
   reset: () => void;
 }
 
-export function useSpeech(lang = "en-US"): UseSpeechResult {
+/**
+ * @param transform Optional filter applied to every recognized segment
+ * (interim and final). Return "" to drop it — used to scrub the referee's
+ * own TTS voice out of the transcript while listening continues in parallel.
+ * Must be referentially stable (wrap in useCallback).
+ */
+export function useSpeech(
+  lang = "en-US",
+  transform?: (text: string) => string
+): UseSpeechResult {
   const [supported, setSupported] = useState(true);
   const [listening, setListening] = useState(false);
   const [transcript, setTranscript] = useState("");
@@ -74,7 +83,9 @@ export function useSpeech(lang = "en-US"): UseSpeechResult {
       let finalText = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
-        const text = result[0]?.transcript ?? "";
+        const raw = result[0]?.transcript ?? "";
+        const text = transform ? transform(raw) : raw;
+        if (!text.trim()) continue;
         if (result.isFinal) finalText += text + " ";
         else interimText += text;
       }
@@ -119,7 +130,7 @@ export function useSpeech(lang = "en-US"): UseSpeechResult {
         /* already stopped */
       }
     };
-  }, [lang]);
+  }, [lang, transform]);
 
   const start = useCallback(() => {
     const rec = recognitionRef.current;

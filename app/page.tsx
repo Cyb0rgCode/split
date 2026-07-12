@@ -70,8 +70,22 @@ const MODE_LABEL: Record<VoiceMode, string> = {
 };
 
 export default function Home() {
+  /* What the referee is currently saying out loud. Recognition keeps running
+     while it speaks, so segments that are mostly the referee's own words are
+     scrubbed from the transcript instead of being fact-checked back at it. */
+  const calloutTextRef = useRef("");
+  const echoFilter = useCallback((text: string) => {
+    const spoken = calloutTextRef.current;
+    if (!spoken) return text;
+    const spokenWords = new Set(normalizeQuote(spoken).split(" "));
+    const words = normalizeQuote(text).split(" ").filter(Boolean);
+    if (words.length === 0) return text;
+    const matches = words.filter((w) => spokenWords.has(w)).length;
+    return matches / words.length > 0.5 ? "" : text;
+  }, []);
+
   const { supported, listening, transcript, interim, error, start, stop, reset } =
-    useSpeech();
+    useSpeech("en-US", echoFilter);
 
   const [sessionActive, setSessionActive] = useState(false);
   const [findings, setFindings] = useState<PlacedFinding[]>([]);
@@ -349,32 +363,37 @@ export default function Home() {
     });
   }, []);
 
+  const calloutClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const drainSpeakQueue = useCallback(() => {
     if (speakingRef.current) return;
     const next = speakQueueRef.current.shift();
-    if (!next) {
-      if (sessionActiveRef.current) start(); // resume listening
-      return;
-    }
+    if (!next) return;
     speakingRef.current = true;
-    stop(); // pause recognition while we talk
+    // Recognition keeps running in parallel — the echo filter scrubs the
+    // referee's own voice so the debaters' words are never lost.
     setSpeakingFinding(next);
     if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
 
     void (async () => {
+      const text = ttsText(next);
+      if (calloutClearTimerRef.current) clearTimeout(calloutClearTimerRef.current);
+      calloutTextRef.current = text;
       // grab the room's attention, then a small beat before the callout
       await playAlert();
       await new Promise((r) => setTimeout(r, 150));
-      const text = ttsText(next);
       const mode = voiceModeRef.current;
       // AI providers fall back to the browser voice; browser mode goes direct.
       const spoken = mode === "browser" ? false : await playRemoteTts(text);
       if (!spoken) await speakWithBrowserTts(text);
+      // recognition finals lag behind the audio — keep filtering briefly
+      calloutClearTimerRef.current = setTimeout(() => {
+        if (!speakingRef.current) calloutTextRef.current = "";
+      }, 2500);
       speakingRef.current = false;
       setSpeakingFinding(null);
       drainSpeakQueue();
     })();
-  }, [start, stop, playAlert, playRemoteTts, speakWithBrowserTts]);
+  }, [playAlert, playRemoteTts, speakWithBrowserTts]);
 
   const interrupt = useCallback(
     (fresh: Finding[]) => {
