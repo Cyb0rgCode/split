@@ -92,6 +92,7 @@ async function callGemini(chunk: string, context?: string): Promise<string> {
     : GEMINI_MODELS;
 
   let lastError = "";
+  let lastStatus = 502;
   for (const model of models) {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -118,10 +119,13 @@ async function callGemini(chunk: string, context?: string): Promise<string> {
       const data = await res.json();
       return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     }
+    lastStatus = res.status;
     lastError = `Gemini API error ${res.status} on ${model}: ${await res.text()}`;
-    if (res.status !== 404) break; // real error (bad key, quota) — don't mask it
+    // Auth errors can't be fixed by another model; anything else (404 gone,
+    // 429 quota — each model has its own, 500/503 hiccups) falls through.
+    if (res.status === 401 || res.status === 403) break;
   }
-  throw new Error(lastError);
+  throw Object.assign(new Error(lastError), { status: lastStatus });
 }
 
 async function callNvidiaNim(chunk: string, context?: string): Promise<string> {
@@ -274,9 +278,12 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("analyze failed:", err);
     const detail = err instanceof Error ? err.message.slice(0, 300) : "";
+    const upstream = (err as { status?: number }).status;
+    // Pass rate limits / overload through so the client backs off quietly.
+    const status = upstream === 429 || upstream === 503 ? upstream : 502;
     return NextResponse.json(
       { error: `Analysis failed. ${detail}`.trim() },
-      { status: 502 }
+      { status }
     );
   }
 }

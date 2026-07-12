@@ -423,15 +423,19 @@ export default function Home() {
   }, []);
 
   /* ── Analysis loop ──────────────────────────────────────────────────── */
+  const cooldownUntilRef = useRef(0);
   const analyze = useCallback(async () => {
     if (inFlightRef.current) return;
+    if (Date.now() < cooldownUntilRef.current) return; // backing off a rate limit
     const finalText = transcriptRef.current;
     // Include words still being spoken so continuous talkers get checked
     // without waiting for a pause. Only finalized text advances the analyzed
     // pointer — the live tail is re-sent next tick and deduped by quote.
     const live = interimRef.current.trim();
     const combined = live ? `${finalText} ${live}` : finalText;
-    const chunk = combined.slice(analyzedRef.current).trim();
+    // Cap what we send — an unbounded chunk would trip the server's length
+    // limit forever, since the pointer only advances on success.
+    const chunk = combined.slice(analyzedRef.current).trim().slice(-3500);
     if (!chunk) return;
     if (chunk === lastChunkRef.current) return; // nothing new since last send
 
@@ -454,6 +458,12 @@ export default function Home() {
         body: JSON.stringify({ chunk, context }),
       });
       if (!res.ok) {
+        lastChunkRef.current = ""; // failed — let the next tick retry this chunk
+        if (res.status === 429 || res.status === 503) {
+          // transient rate limit / overload — back off quietly, don't alarm
+          cooldownUntilRef.current = Date.now() + 20000;
+          return;
+        }
         const data = await res.json().catch(() => null);
         setApiError(data?.error ?? `Analysis failed (HTTP ${res.status})`);
         return;
@@ -487,6 +497,7 @@ export default function Home() {
         allClearTimerRef.current = setTimeout(() => setAllClear(null), 8000);
       }
     } catch {
+      lastChunkRef.current = ""; // failed — let the next tick retry this chunk
       setApiError("Network error while analyzing. Retrying…");
     } finally {
       inFlightRef.current = false;
