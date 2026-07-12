@@ -9,10 +9,6 @@ export async function GET() {
     : process.env.NVIDIA_NIM_API_KEY
       ? "nvidia-nim"
       : null;
-  const search = process.env.TAVILY_API_KEY
-    ? "tavily"
-    : process.env.BRAVE_SEARCH_API_KEY
-      ? "brave"
-      : "wikipedia";
+  const search = process.env.TAVILY_API_KEY ? "tavily" : "wikipedia";
   return NextResponse.json({ ai, search });
 }

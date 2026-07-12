@@ -33,28 +33,6 @@ async function searchTavily(query: string): Promise<SearchResult[]> {
     }));
 }
 
-async function searchBrave(query: string): Promise<SearchResult[]> {
-  const res = await fetch(
-    `https://api.search.brave.com/res/v1/web/search?count=5&q=${encodeURIComponent(query)}`,
-    {
-      headers: {
-        Accept: "application/json",
-        "X-Subscription-Token": process.env.BRAVE_SEARCH_API_KEY!,
-      },
-      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
-    }
-  );
-  if (!res.ok) throw new Error(`Brave Search error ${res.status}`);
-  const data = await res.json();
-  return (data?.web?.results ?? [])
-    .filter((r: { url?: string }) => typeof r?.url === "string")
-    .map((r: { title?: string; url: string; description?: string }) => ({
-      title: r.title ?? r.url,
-      url: r.url,
-      snippet: r.description ?? "",
-    }));
-}
-
 /* Keyless fallback so search works with zero configuration. */
 async function searchWikipedia(query: string): Promise<SearchResult[]> {
   const res = await fetch(
@@ -77,13 +55,12 @@ async function searchWikipedia(query: string): Promise<SearchResult[]> {
 
 /**
  * Search the web with whichever provider is configured, in order of quality:
- * Tavily → Brave → Wikipedia (keyless). Returns null if everything fails —
- * callers should fall back gracefully rather than block the debate.
+ * Tavily → Wikipedia (keyless). Returns null if everything fails — callers
+ * should fall back gracefully rather than block the debate.
  */
 export async function searchWeb(query: string): Promise<SearchResult[] | null> {
   const providers: Array<() => Promise<SearchResult[]>> = [];
   if (process.env.TAVILY_API_KEY) providers.push(() => searchTavily(query));
-  if (process.env.BRAVE_SEARCH_API_KEY) providers.push(() => searchBrave(query));
   providers.push(() => searchWikipedia(query));
 
   for (const provider of providers) {

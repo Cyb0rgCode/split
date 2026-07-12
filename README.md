@@ -25,9 +25,9 @@ No alerts means the debate is clean. Better debates for both sides.
 3. The route asks **Google Gemini** (or **NVIDIA NIM**) — both have free
    tiers — to flag only clear-cut false claims and fallacies, and returns
    structured JSON.
-4. Each flagged claim is then run through a **live web search** (Tavily,
-   Brave Search, or the keyless Wikipedia API) so the cited source is a real,
-   current result — not the model's memory.
+4. Each flagged claim is then run through a **live web search** (Tavily or
+   the keyless Wikipedia API) so the cited source is a real, current
+   result — not the model's memory.
 5. New findings interrupt the debate: the app pauses its own listening,
    **speaks the correction aloud** (browser text-to-speech — free, on-device),
    shows it full-screen, then resumes listening. The card also stays woven
@@ -56,15 +56,13 @@ Gemini is used if both are set. Override the model with `GEMINI_MODEL` /
 
 Fact-check cards link to a live web search result. Out of the box this uses
 the **keyless Wikipedia search API** — no signup at all. For broader,
-higher-quality sources add one of:
+higher-quality sources add:
 
 | Variable | Free tier |
 | --- | --- |
 | `TAVILY_API_KEY` | 1,000 credits/month — [tavily.com](https://tavily.com) |
-| `BRAVE_SEARCH_API_KEY` | 2,000 queries/month — [brave.com/search/api](https://brave.com/search/api) |
 
-Tavily is preferred if both are set; anything that fails falls back down the
-chain (Tavily → Brave → Wikipedia).
+Tavily is used when set; on failure it falls back to Wikipedia.
 
 Open `http://localhost:3000`, allow microphone access, press
 **Start listening**, and start arguing.
