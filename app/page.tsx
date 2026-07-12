@@ -104,6 +104,7 @@ export default function Home() {
     gemini: false,
   });
   const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
+  const [viewedFinding, setViewedFinding] = useState<Finding | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const [allClear, setAllClear] = useState<string | null>(null);
   const allClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -566,6 +567,10 @@ export default function Home() {
       <span
         key={`f${pf.id}`}
         className={`inline-card v-${f.type === "fallacy" ? "fallacy" : f.verdict}`}
+        role="button"
+        tabIndex={0}
+        onClick={() => setViewedFinding(f)}
+        onKeyDown={(e) => e.key === "Enter" && setViewedFinding(f)}
       >
         <span className="tag">
           {f.type === "fallacy"
@@ -578,7 +583,12 @@ export default function Home() {
         {f.type === "fact_check" && f.source_name && (
           <span className="source">
             {f.source_url ? (
-              <a href={f.source_url} target="_blank" rel="noreferrer">
+              <a
+                href={f.source_url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => e.stopPropagation()}
+              >
                 {f.source_name}
               </a>
             ) : (
@@ -812,6 +822,57 @@ export default function Home() {
               </button>
               <button className="side-btn active" onClick={() => setPickerOpen(false)}>
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {viewedFinding && !speakingFinding && (
+        <div className="interrupt-overlay" onClick={() => setViewedFinding(null)}>
+          <div
+            className={`interrupt-card v-${
+              viewedFinding.type === "fallacy" ? "fallacy" : viewedFinding.verdict
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="tag">
+              {viewedFinding.type === "fallacy"
+                ? `⚠ ${viewedFinding.fallacy_name}`
+                : `✗ ${VERDICT_LABEL[viewedFinding.verdict]}`}
+            </span>
+            <blockquote>&ldquo;{viewedFinding.quote}&rdquo;</blockquote>
+            <div className="body">
+              {viewedFinding.type === "fallacy"
+                ? viewedFinding.explanation
+                : viewedFinding.correction}
+            </div>
+            {viewedFinding.type === "fact_check" && viewedFinding.source_name && (
+              <div className="source">
+                Source:{" "}
+                {viewedFinding.source_url ? (
+                  <a href={viewedFinding.source_url} target="_blank" rel="noreferrer">
+                    {viewedFinding.source_name}
+                  </a>
+                ) : (
+                  viewedFinding.source_name
+                )}
+              </div>
+            )}
+            <div className="picker-actions">
+              <button
+                className="side-btn"
+                onClick={() => {
+                  const f = viewedFinding;
+                  setViewedFinding(null);
+                  speakQueueRef.current.push(f);
+                  drainSpeakQueue();
+                }}
+              >
+                🔊 Replay
+              </button>
+              <button className="side-btn active" onClick={() => setViewedFinding(null)}>
+                Close
               </button>
             </div>
           </div>
