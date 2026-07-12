@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSpeech } from "@/lib/useSpeech";
+import WaveBar from "@/components/WaveBar";
 import type { AnalyzeResponse, Finding } from "@/lib/types";
 
-interface Alert {
+interface PlacedFinding {
   id: number;
   finding: Finding;
-  at: Date;
+  /** Transcript length when the finding arrived — anchors it inline. */
+  offset: number;
 }
 
 const ANALYZE_INTERVAL_MS = 6000;
@@ -25,15 +27,33 @@ function normalizeQuote(q: string): string {
   return q.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+/** What the referee says out loud when it interrupts. */
+function ttsText(f: Finding): string {
+  if (f.type === "fallacy") {
+    const article = /^[aeiou]/i.test(f.fallacy_name) ? "an" : "a";
+    return `Hold on — that's ${article} ${f.fallacy_name}. ${f.explanation}`;
+  }
+  const lead =
+    f.verdict === "false"
+      ? "That's not correct."
+      : f.verdict === "misleading"
+        ? "That's misleading."
+        : "That claim couldn't be verified.";
+  const source = f.source_name ? ` Source: ${f.source_name}.` : "";
+  return `Fact check. ${lead} ${f.correction}${source}`;
+}
+
 export default function Home() {
   const { supported, listening, transcript, interim, error, start, stop, reset } =
     useSpeech();
 
-  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [findings, setFindings] = useState<PlacedFinding[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [mirrored, setMirrored] = useState(false);
-  const [sound, setSound] = useState(true);
+  const [voice, setVoice] = useState(true);
+  const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
+  const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
 
   const transcriptRef = useRef("");
   const analyzedRef = useRef(0);
@@ -41,14 +61,25 @@ export default function Home() {
   const inFlightRef = useRef(false);
   const seenQuotesRef = useRef<Set<string>>(new Set());
   const nextIdRef = useRef(1);
-  const soundRef = useRef(sound);
-  const feedRef = useRef<HTMLDivElement>(null);
+  const voiceRef = useRef(voice);
+  const sessionActiveRef = useRef(false);
+  const speakQueueRef = useRef<Finding[]>([]);
+  const speakingRef = useRef(false);
+  const transcriptElRef = useRef<HTMLDivElement>(null);
 
   transcriptRef.current = transcript;
-  soundRef.current = sound;
+  voiceRef.current = voice;
+  sessionActiveRef.current = sessionActive;
+
+  // Verify server setup once on load so a missing key never fails silently.
+  useEffect(() => {
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((h) => setAiConfigured(!!h.ai))
+      .catch(() => setAiConfigured(null));
+  }, []);
 
   const chime = useCallback(() => {
-    if (!soundRef.current) return;
     try {
       type AudioWindow = Window & { webkitAudioContext?: typeof AudioContext };
       const Ctx = window.AudioContext ?? (window as AudioWindow).webkitAudioContext;
@@ -69,6 +100,50 @@ export default function Home() {
     if (navigator.vibrate) navigator.vibrate(200);
   }, []);
 
+  /* ── Spoken interruptions ─────────────────────────────────────────────
+     While the referee talks, speech recognition is paused so the app
+     doesn't transcribe (and fact-check) its own voice. */
+  const drainSpeakQueue = useCallback(() => {
+    if (speakingRef.current) return;
+    const next = speakQueueRef.current.shift();
+    if (!next) {
+      if (sessionActiveRef.current) start(); // resume listening
+      return;
+    }
+    speakingRef.current = true;
+    stop(); // pause recognition while we talk
+    setSpeakingFinding(next);
+    if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+
+    const utter = new SpeechSynthesisUtterance(ttsText(next));
+    utter.rate = 1.05;
+    const done = () => {
+      speakingRef.current = false;
+      setSpeakingFinding(null);
+      drainSpeakQueue();
+    };
+    utter.onend = done;
+    utter.onerror = done;
+    window.speechSynthesis.speak(utter);
+  }, [start, stop]);
+
+  const interrupt = useCallback(
+    (fresh: Finding[]) => {
+      if (voiceRef.current && "speechSynthesis" in window) {
+        speakQueueRef.current.push(...fresh);
+        drainSpeakQueue();
+      } else {
+        chime();
+      }
+    },
+    [drainSpeakQueue, chime]
+  );
+
+  const skipSpeaking = useCallback(() => {
+    window.speechSynthesis.cancel(); // fires onend/onerror → queue drains
+  }, []);
+
+  /* ── Analysis loop ──────────────────────────────────────────────────── */
   const analyze = useCallback(async () => {
     if (inFlightRef.current) return;
     const full = transcriptRef.current;
@@ -94,7 +169,7 @@ export default function Home() {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        setApiError(data?.error ?? `Analysis failed (${res.status})`);
+        setApiError(data?.error ?? `Analysis failed (HTTP ${res.status})`);
         return;
       }
       setApiError(null);
@@ -109,15 +184,15 @@ export default function Home() {
         return true;
       });
       if (fresh.length > 0) {
-        setAlerts((prev) => [
+        setFindings((prev) => [
           ...prev,
           ...fresh.map((finding) => ({
             id: nextIdRef.current++,
             finding,
-            at: new Date(),
+            offset: sentUpTo,
           })),
         ]);
-        chime();
+        interrupt(fresh);
       }
     } catch {
       setApiError("Network error while analyzing. Retrying…");
@@ -125,159 +200,187 @@ export default function Home() {
       inFlightRef.current = false;
       setAnalyzing(false);
     }
-  }, [chime]);
+  }, [interrupt]);
 
-  // Poll for un-analyzed speech while listening.
   useEffect(() => {
-    if (!listening) return;
+    if (!sessionActive) return;
     const timer = setInterval(analyze, ANALYZE_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [listening, analyze]);
+  }, [sessionActive, analyze]);
 
-  // Flush whatever is left when the mic is turned off.
+  /* ── Session controls ───────────────────────────────────────────────── */
+  const handleStart = useCallback(() => {
+    setApiError(null);
+    setSessionActive(true);
+    // Unlock speech synthesis on this user gesture (required on iOS).
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+    start();
+  }, [start]);
+
   const handleStop = useCallback(() => {
+    setSessionActive(false);
+    speakQueueRef.current = [];
+    window.speechSynthesis?.cancel();
     stop();
     pendingSinceRef.current = 0; // force the final short chunk through
     void analyze();
   }, [stop, analyze]);
 
-  const handleStart = useCallback(() => {
-    setApiError(null);
-    start();
-  }, [start]);
-
   const handleReset = useCallback(() => {
     reset();
-    setAlerts([]);
+    setFindings([]);
     setApiError(null);
     analyzedRef.current = 0;
     pendingSinceRef.current = null;
     seenQuotesRef.current.clear();
   }, [reset]);
 
-  // Keep the newest alert in view.
+  // Keep the newest words in view.
   useEffect(() => {
-    const feed = feedRef.current;
-    if (!feed) return;
-    feed.scrollTop = mirrored ? 0 : feed.scrollHeight;
-  }, [alerts, mirrored]);
+    const el = transcriptElRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [transcript, interim, findings]);
 
-  const tail = (transcript.slice(-220) + " " + interim).trim();
+  /* ── Render: transcript with findings woven in at their offsets ─────── */
+  const segments: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const pf of findings) {
+    const text = transcript.slice(cursor, pf.offset).trim();
+    if (text) segments.push(<span key={`t${pf.id}`}>{text} </span>);
+    cursor = Math.max(cursor, pf.offset);
+    const f = pf.finding;
+    segments.push(
+      <span
+        key={`f${pf.id}`}
+        className={`inline-card v-${f.type === "fallacy" ? "fallacy" : f.verdict}`}
+      >
+        <span className="tag">
+          {f.type === "fallacy"
+            ? `⚠ ${f.fallacy_name}`
+            : `✗ ${VERDICT_LABEL[f.verdict]}`}
+        </span>
+        <span className="body">
+          {f.type === "fallacy" ? f.explanation : f.correction}
+        </span>
+        {f.type === "fact_check" && f.source_name && (
+          <span className="source">
+            {f.source_url ? (
+              <a href={f.source_url} target="_blank" rel="noreferrer">
+                {f.source_name}
+              </a>
+            ) : (
+              f.source_name
+            )}
+          </span>
+        )}
+      </span>
+    );
+  }
+  const tailText = transcript.slice(cursor).trim();
 
   return (
-    <main className="app">
-      <header className="header">
-        <div className="brand">
-          <h1>SPLIT</h1>
-          <span>AI debate referee</span>
+    <main className="stage">
+      {aiConfigured === false && (
+        <div className="setup-banner">
+          <strong>Setup needed:</strong> no AI key is configured, so nothing will
+          be fact-checked. Add <code>GEMINI_API_KEY</code> (free at{" "}
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
+            aistudio.google.com/apikey
+          </a>
+          ) or <code>NVIDIA_NIM_API_KEY</code> to your environment variables and
+          redeploy. Web-search keys are optional.
         </div>
-        <div className="header-actions">
-          <button
-            className={`icon-btn ${sound ? "active" : ""}`}
-            onClick={() => setSound((s) => !s)}
-            title="Alert sound"
-          >
-            {sound ? "🔔 On" : "🔕 Off"}
-          </button>
-          <button
-            className={`icon-btn ${mirrored ? "active" : ""}`}
-            onClick={() => setMirrored((m) => !m)}
-            title="Rotate the feed 180° so your opponent can read it"
-          >
-            ↕ Flip
-          </button>
-          <button className="icon-btn" onClick={handleReset} title="Clear session">
-            ✕ Clear
-          </button>
-        </div>
-      </header>
-
+      )}
       {!supported && (
-        <div className="error-banner">
+        <div className="setup-banner">
           This browser doesn&apos;t support live speech recognition. Use Chrome,
-          Edge, or Safari on your phone.
+          Edge, or Safari.
         </div>
       )}
       {(error || apiError) && <div className="error-banner">{error ?? apiError}</div>}
 
-      <div className={`feed ${mirrored ? "mirrored" : ""}`} ref={feedRef}>
-        {alerts.length === 0 ? (
-          <div className="empty-state">
-            <div className="big">⚖️</div>
-            <h2>Place the phone between you and your opponent</h2>
+      <div className="transcript" ref={transcriptElRef}>
+        {transcript || interim || findings.length > 0 ? (
+          <p>
+            {segments}
+            {tailText && <span>{tailText} </span>}
+            {interim && <span className="interim">{interim}</span>}
+          </p>
+        ) : (
+          <div className="hint">
+            <div className="mark">⚖️</div>
             <p>
-              Hit <strong>Start listening</strong> and debate normally. When
-              someone states a false claim or statistic, Split posts the
-              correction with a source. When someone commits a logical fallacy —
-              ad hominem, straw man, false dilemma — Split calls it out. No
-              alerts means the debate is clean. 👏
+              Place the phone between you, press the mic, and debate. Everything
+              said appears here — and when someone gets a fact wrong or slips
+              into a fallacy, the referee interrupts out loud with the
+              correction and its source.
             </p>
           </div>
-        ) : (
-          alerts.map(({ id, finding, at }) => (
-            <div
-              key={id}
-              className={`card v-${
-                finding.type === "fallacy" ? "fallacy" : finding.verdict
-              }`}
-            >
-              <span className="card-tag">
-                {finding.type === "fallacy"
-                  ? `⚠ ${finding.fallacy_name}`
-                  : `✗ ${VERDICT_LABEL[finding.verdict]}`}
-              </span>
-              <blockquote>&ldquo;{finding.quote}&rdquo;</blockquote>
-              <div className="body">
-                {finding.type === "fallacy" ? finding.explanation : finding.correction}
-              </div>
-              {finding.type === "fact_check" && finding.source_name && (
-                <div className="source">
-                  Source:{" "}
-                  {finding.source_url ? (
-                    <a href={finding.source_url} target="_blank" rel="noreferrer">
-                      {finding.source_name}
-                    </a>
-                  ) : (
-                    finding.source_name
-                  )}
-                </div>
-              )}
-              <div className="time">
-                {at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </div>
-            </div>
-          ))
         )}
       </div>
 
-      {listening && (
-        <div className="transcript-strip">
-          <div className="live-dot" />
-          <div className="words">
-            {tail ? (
-              <>
-                {transcript.slice(-220)}
-                <span className="interim"> {interim}</span>
-              </>
-            ) : (
-              "Listening…"
+      <div className="dock">
+        <WaveBar active={sessionActive} />
+        <div className="controls">
+          <button
+            className={`side-btn ${voice ? "active" : ""}`}
+            onClick={() => setVoice((v) => !v)}
+            title="Spoken interruptions"
+          >
+            {voice ? "🔊 Voice" : "🔇 Muted"}
+          </button>
+          <button
+            className={`mic-btn ${sessionActive ? "listening" : ""}`}
+            onClick={sessionActive ? handleStop : handleStart}
+            disabled={!supported}
+            aria-label={sessionActive ? "Stop" : "Start listening"}
+          >
+            {sessionActive ? "■" : "🎙"}
+          </button>
+          <button className="side-btn" onClick={handleReset} title="Clear session">
+            ✕ Clear
+          </button>
+        </div>
+        <div className={`status ${analyzing ? "thinking" : ""}`}>
+          {speakingFinding
+            ? "Referee speaking…"
+            : analyzing
+              ? "Fact-checking…"
+              : sessionActive
+                ? listening
+                  ? "Listening"
+                  : "Paused"
+                : "Mic off"}
+        </div>
+      </div>
+
+      {speakingFinding && (
+        <div className="interrupt-overlay" onClick={skipSpeaking}>
+          <div
+            className={`interrupt-card v-${
+              speakingFinding.type === "fallacy" ? "fallacy" : speakingFinding.verdict
+            }`}
+          >
+            <span className="tag">
+              {speakingFinding.type === "fallacy"
+                ? `⚠ ${speakingFinding.fallacy_name}`
+                : `✗ ${VERDICT_LABEL[speakingFinding.verdict]}`}
+            </span>
+            <blockquote>&ldquo;{speakingFinding.quote}&rdquo;</blockquote>
+            <div className="body">
+              {speakingFinding.type === "fallacy"
+                ? speakingFinding.explanation
+                : speakingFinding.correction}
+            </div>
+            {speakingFinding.type === "fact_check" && speakingFinding.source_name && (
+              <div className="source">Source: {speakingFinding.source_name}</div>
             )}
+            <div className="skip">tap to skip</div>
           </div>
         </div>
       )}
-
-      <footer className="controls">
-        <button
-          className={`mic-btn ${listening ? "listening" : ""}`}
-          onClick={listening ? handleStop : handleStart}
-          disabled={!supported}
-        >
-          {listening ? "■ Stop" : "🎙 Start listening"}
-        </button>
-        <span className={`status-note ${analyzing ? "thinking" : ""}`}>
-          {analyzing ? "Fact-checking…" : listening ? "Referee active" : "Mic off"}
-        </span>
-      </footer>
     </main>
   );
 }

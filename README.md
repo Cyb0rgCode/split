@@ -4,11 +4,15 @@ Place your phone between you and your debate opponent. Split listens to the
 conversation and, in real time:
 
 - **Fact-checks false claims and statistics** — when someone states something
-  incorrect, a card pops up with the correct claim/statistic and an
-  authoritative source.
+  incorrect, the referee **interrupts out loud**, speaking the correct
+  claim/statistic and its source, while the correction card appears inline in
+  the transcript.
 - **Calls out logical fallacies** — ad hominem, straw man, false dilemma,
   whataboutism, slippery slope, and more, each with a one-line explanation of
   why it's a fallacy.
+
+The UI is a single full-page live transcript with a wave bar at the bottom
+that illuminates while the debaters talk.
 
 No alerts means the debate is clean. Better debates for both sides.
 
@@ -24,8 +28,11 @@ No alerts means the debate is clean. Better debates for both sides.
 4. Each flagged claim is then run through a **live web search** (Tavily,
    Brave Search, or the keyless Wikipedia API) so the cited source is a real,
    current result — not the model's memory.
-5. New findings pop up as cards with a chime and vibration. A **Flip** button
-   rotates the feed 180° so the person across the table can read it too.
+5. New findings interrupt the debate: the app pauses its own listening,
+   **speaks the correction aloud** (browser text-to-speech — free, on-device),
+   shows it full-screen, then resumes listening. The card also stays woven
+   into the transcript at the point where it happened. Toggle **Voice** off
+   to get a chime + vibration instead.
 
 ## Setup
 
@@ -74,6 +81,22 @@ Open `http://localhost:3000`, allow microphone access, press
    (or `NVIDIA_NIM_API_KEY`).
 4. Deploy. The mic works on the deployed URL because Vercel serves over HTTPS
    (browsers only allow microphone access on secure origins).
+
+## Nothing happening? Troubleshooting
+
+- **No AI key configured** is the #1 cause — the app shows a yellow setup
+  banner on load if so. Add `GEMINI_API_KEY` in Vercel → Settings →
+  Environment Variables and **redeploy** (env changes don't apply to old
+  deployments). Web-search keys are *optional* and never the blocker.
+- Any provider error (bad key, quota, model) now appears as a red banner with
+  the actual error message instead of failing silently.
+- Analysis runs every ~6 seconds once ~60 characters of *finalized* speech
+  accumulate — say a full sentence or two and give it a beat.
+- The referee is deliberately conservative: opinions and vague claims are
+  ignored. Test it with something concrete and clearly wrong, e.g. "the Great
+  Wall of China is visible from the Moon" or "unemployment is 40 percent".
+- Speech recognition needs Chrome, Edge, or Safari over HTTPS (or localhost),
+  with mic permission granted.
 
 ## Notes & limits
 

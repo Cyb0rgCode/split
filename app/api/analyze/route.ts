@@ -62,35 +62,51 @@ const GEMINI_RESPONSE_SCHEMA = {
   required: ["findings"],
 };
 
+/* Tried in order; a 404 (model renamed/retired) falls through to the next. */
+const GEMINI_MODELS = [
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+];
+
 async function callGemini(chunk: string, context?: string): Promise<string> {
   const key = process.env.GEMINI_API_KEY!;
-  const model = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": key,
-      },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [
-          { role: "user", parts: [{ text: buildUserPrompt(chunk, context) }] },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: "application/json",
-          responseSchema: GEMINI_RESPONSE_SCHEMA,
+  const models = process.env.GEMINI_MODEL
+    ? [process.env.GEMINI_MODEL, ...GEMINI_MODELS]
+    : GEMINI_MODELS;
+
+  let lastError = "";
+  for (const model of models) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": key,
         },
-      }),
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+          contents: [
+            { role: "user", parts: [{ text: buildUserPrompt(chunk, context) }] },
+          ],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: "application/json",
+            responseSchema: GEMINI_RESPONSE_SCHEMA,
+          },
+        }),
+      }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     }
-  );
-  if (!res.ok) {
-    throw new Error(`Gemini API error ${res.status}: ${await res.text()}`);
+    lastError = `Gemini API error ${res.status} on ${model}: ${await res.text()}`;
+    if (res.status !== 404) break; // real error (bad key, quota) — don't mask it
   }
-  const data = await res.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  throw new Error(lastError);
 }
 
 async function callNvidiaNim(chunk: string, context?: string): Promise<string> {
@@ -235,6 +251,10 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     console.error("analyze failed:", err);
-    return NextResponse.json({ error: "Analysis failed" }, { status: 502 });
+    const detail = err instanceof Error ? err.message.slice(0, 300) : "";
+    return NextResponse.json(
+      { error: `Analysis failed. ${detail}`.trim() },
+      { status: 502 }
+    );
   }
 }
