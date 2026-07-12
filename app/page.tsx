@@ -12,13 +12,13 @@ interface PlacedFinding {
   offset: number;
 }
 
-const ANALYZE_INTERVAL_MS = 6000;
-const MIN_CHUNK_CHARS = 60;
-const MAX_WAIT_MS = 15000;
+const ANALYZE_INTERVAL_MS = 4000;
+const MIN_CHUNK_CHARS = 40;
+const MAX_WAIT_MS = 10000;
 const CONTEXT_CHARS = 1500;
 
 const VERDICT_LABEL: Record<string, string> = {
-  false: "False claim",
+  false: "Liar alert",
   misleading: "Misleading",
   unverifiable: "Unverifiable",
 };
@@ -27,20 +27,20 @@ function normalizeQuote(q: string): string {
   return q.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-/** What the referee says out loud when it interrupts. */
+/** What the referee says out loud when it cuts in. */
 function ttsText(f: Finding): string {
   if (f.type === "fallacy") {
     const article = /^[aeiou]/i.test(f.fallacy_name) ? "an" : "a";
-    return `Hold on — that's ${article} ${f.fallacy_name}. ${f.explanation}`;
+    return `Foul! That's ${article} ${f.fallacy_name}. ${f.explanation}`;
   }
   const lead =
     f.verdict === "false"
-      ? "That's not correct."
+      ? "Stop right there — that's a lie! Here's the truth:"
       : f.verdict === "misleading"
-        ? "That's misleading."
-        : "That claim couldn't be verified.";
+        ? "Hold on — that's misleading. Actually:"
+        : "Careful — that claim can't be verified.";
   const source = f.source_name ? ` Source: ${f.source_name}.` : "";
-  return `Fact check. ${lead} ${f.correction}${source}`;
+  return `${lead} ${f.correction}${source}`;
 }
 
 export default function Home() {
@@ -100,6 +100,29 @@ export default function Home() {
     if (navigator.vibrate) navigator.vibrate(200);
   }, []);
 
+  /** Sharp game-show buzzer that cuts through mid-conversation talking. */
+  const buzzer = useCallback(() => {
+    try {
+      type AudioWindow = Window & { webkitAudioContext?: typeof AudioContext };
+      const Ctx = window.AudioContext ?? (window as AudioWindow).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(220, ctx.currentTime);
+      osc.frequency.setValueAtTime(160, ctx.currentTime + 0.18);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.45);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.45);
+      osc.onended = () => ctx.close();
+    } catch {
+      /* audio is best-effort */
+    }
+  }, []);
+
   /* ── Spoken interruptions ─────────────────────────────────────────────
      While the referee talks, speech recognition is paused so the app
      doesn't transcribe (and fact-check) its own voice. */
@@ -114,9 +137,11 @@ export default function Home() {
     stop(); // pause recognition while we talk
     setSpeakingFinding(next);
     if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+    buzzer(); // grab the room's attention before speaking
 
     const utter = new SpeechSynthesisUtterance(ttsText(next));
     utter.rate = 1.05;
+    utter.volume = 1;
     const done = () => {
       speakingRef.current = false;
       setSpeakingFinding(null);
@@ -124,8 +149,9 @@ export default function Home() {
     };
     utter.onend = done;
     utter.onerror = done;
-    window.speechSynthesis.speak(utter);
-  }, [start, stop]);
+    // small beat after the buzzer so the callout isn't drowned out
+    setTimeout(() => window.speechSynthesis.speak(utter), 450);
+  }, [start, stop, buzzer]);
 
   const interrupt = useCallback(
     (fresh: Finding[]) => {
