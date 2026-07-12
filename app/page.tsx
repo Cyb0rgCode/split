@@ -456,12 +456,14 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chunk, context }),
+        signal: AbortSignal.timeout(28000),
       });
       if (!res.ok) {
         lastChunkRef.current = ""; // failed — let the next tick retry this chunk
-        if (res.status === 429 || res.status === 503) {
-          // transient rate limit / overload — back off quietly, don't alarm
-          cooldownUntilRef.current = Date.now() + 20000;
+        if (res.status === 429 || res.status === 503 || res.status === 504) {
+          // transient rate limit / overload / timeout — back off quietly
+          cooldownUntilRef.current =
+            Date.now() + (res.status === 504 ? 8000 : 20000);
           return;
         }
         const data = await res.json().catch(() => null);

@@ -93,28 +93,40 @@ async function callGemini(chunk: string, context?: string): Promise<string> {
 
   let lastError = "";
   let lastStatus = 502;
+  const deadline = Date.now() + 18000; // stay well under the platform timeout
   for (const model of models) {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": key,
-        },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [
-            { role: "user", parts: [{ text: buildUserPrompt(chunk, context) }] },
-          ],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: "application/json",
-            responseSchema: GEMINI_RESPONSE_SCHEMA,
+    const budget = deadline - Date.now();
+    if (budget < 2000) break;
+    let res: Response;
+    try {
+      res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-goog-api-key": key,
           },
-        }),
-      }
-    );
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            contents: [
+              { role: "user", parts: [{ text: buildUserPrompt(chunk, context) }] },
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: "application/json",
+              responseSchema: GEMINI_RESPONSE_SCHEMA,
+            },
+          }),
+          signal: AbortSignal.timeout(Math.min(12000, budget)),
+        }
+      );
+    } catch (err) {
+      // Slow generation — report as transient so the client retries quietly.
+      lastStatus = 503;
+      lastError = `Gemini timed out on ${model}: ${String(err).slice(0, 120)}`;
+      continue;
+    }
     if (res.ok) {
       const data = await res.json();
       return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
@@ -216,7 +228,7 @@ function sanitizeFindings(raw: unknown): Finding[] {
  * the internal search_query is dropped from the response either way.
  */
 async function attachLiveSources(findings: Finding[]): Promise<void> {
-  await Promise.all(
+  const enrich = Promise.all(
     findings.map(async (f) => {
       if (f.type !== "fact_check") return;
       const query = f.search_query || f.correction;
@@ -228,6 +240,9 @@ async function attachLiveSources(findings: Finding[]): Promise<void> {
       f.source_url = best.url;
     })
   );
+  // Never let a slow search delay the callout — after 5s ship the model's
+  // own citation instead.
+  await Promise.race([enrich, new Promise((r) => setTimeout(r, 5000))]);
 }
 
 export async function POST(req: NextRequest) {

@@ -118,7 +118,7 @@ async function geminiTtsModel(
             },
           },
         }),
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(12000),
       }
     );
     if (!res.ok) {
