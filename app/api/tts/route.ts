@@ -41,11 +41,13 @@ interface TtsAttempt {
     flash model first, then eleven_v3 for accounts without it. */
 async function elevenLabsTts(
   text: string,
-  attempts: TtsAttempt[]
+  attempts: TtsAttempt[],
+  voiceOverride?: string
 ): Promise<ArrayBuffer | null> {
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key) return null;
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb"; // George
+  const voiceId =
+    voiceOverride || process.env.ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb"; // George
   const models = [
     ...new Set([process.env.ELEVENLABS_MODEL || "eleven_flash_v2_5", "eleven_v3"]),
   ];
@@ -84,10 +86,11 @@ async function elevenLabsTts(
 async function geminiTtsModel(
   model: string,
   text: string,
-  attempts: TtsAttempt[]
+  attempts: TtsAttempt[],
+  voiceOverride?: string
 ): Promise<Buffer | null> {
   const key = process.env.GEMINI_API_KEY!;
-  const voice = process.env.GEMINI_TTS_VOICE || "Kore";
+  const voice = voiceOverride || process.env.GEMINI_TTS_VOICE || "Kore";
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -164,9 +167,13 @@ function isFatal(attempt: TtsAttempt): boolean {
 
 export async function POST(req: NextRequest) {
   let text = "";
+  let provider = "";
+  let voice = "";
   try {
     const body = await req.json();
     text = typeof body.text === "string" ? body.text.trim() : "";
+    provider = typeof body.provider === "string" ? body.provider : "";
+    voice = typeof body.voice === "string" ? body.voice.trim().slice(0, 60) : "";
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
@@ -177,16 +184,26 @@ export async function POST(req: NextRequest) {
 
   const attempts: TtsAttempt[] = [];
 
-  const eleven = await elevenLabsTts(text, attempts);
-  if (eleven) {
-    return new NextResponse(eleven, {
-      headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
-    });
+  // "elevenlabs" / "gemini" pins that provider (the client picked it in the
+  // voice menu and falls back to the browser voice itself); empty tries all.
+  if (provider !== "gemini") {
+    const eleven = await elevenLabsTts(text, attempts, voice || undefined);
+    if (eleven) {
+      return new NextResponse(eleven, {
+        headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
+      });
+    }
+    if (provider === "elevenlabs") {
+      return NextResponse.json(
+        { error: "TTS unavailable", attempts },
+        { status: attempts[attempts.length - 1]?.status || 503 }
+      );
+    }
   }
 
   if (process.env.GEMINI_API_KEY) {
     for (const model of geminiModelList()) {
-      const wav = await geminiTtsModel(model, text, attempts);
+      const wav = await geminiTtsModel(model, text, attempts, voice || undefined);
       if (wav) {
         return new NextResponse(new Uint8Array(wav), {
           headers: { "Content-Type": "audio/wav", "Cache-Control": "no-store" },

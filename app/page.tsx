@@ -44,6 +44,31 @@ function ttsText(f: Finding): string {
   return `${lead} ${f.correction}${source}`;
 }
 
+type VoiceMode = "off" | "browser" | "elevenlabs" | "gemini";
+
+interface VoicePick {
+  browser: string; // voice name, "" = auto
+  elevenlabs: string; // voice id
+  gemini: string; // prebuilt voice name
+}
+
+const ELEVENLABS_VOICES: Array<{ id: string; name: string }> = [
+  { id: "JBFqnCBsd6RMkjVDRZzb", name: "George" },
+  { id: "9BWtsMINqrJLrRacOk9x", name: "Aria" },
+  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah" },
+  { id: "IKne3meq5aSn9XLyUdCD", name: "Charlie" },
+  { id: "nPczCjzI2devNBz1zQrb", name: "Brian" },
+];
+
+const GEMINI_VOICES = ["Kore", "Puck", "Charon", "Fenrir", "Aoede", "Zephyr"];
+
+const MODE_LABEL: Record<VoiceMode, string> = {
+  off: "🔇 Off",
+  browser: "🔊 Browser",
+  elevenlabs: "🔊 11Labs",
+  gemini: "🔊 Gemini",
+};
+
 export default function Home() {
   const { supported, listening, transcript, interim, error, start, stop, reset } =
     useSpeech();
@@ -52,7 +77,18 @@ export default function Home() {
   const [findings, setFindings] = useState<PlacedFinding[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
-  const [voice, setVoice] = useState(true);
+  const [voiceMode, setVoiceMode] = useState<VoiceMode>("browser");
+  const [voicePick, setVoicePick] = useState<VoicePick>({
+    browser: "",
+    elevenlabs: ELEVENLABS_VOICES[0].id,
+    gemini: GEMINI_VOICES[0],
+  });
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [browserVoices, setBrowserVoices] = useState<string[]>([]);
+  const [ttsAvailable, setTtsAvailable] = useState({
+    elevenlabs: false,
+    gemini: false,
+  });
   const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const [allClear, setAllClear] = useState<string | null>(null);
@@ -66,7 +102,8 @@ export default function Home() {
   const inFlightRef = useRef(false);
   const seenQuotesRef = useRef<Set<string>>(new Set());
   const nextIdRef = useRef(1);
-  const voiceRef = useRef(voice);
+  const voiceModeRef = useRef<VoiceMode>(voiceMode);
+  const voicePickRef = useRef<VoicePick>(voicePick);
   const sessionActiveRef = useRef(false);
   const speakQueueRef = useRef<Finding[]>([]);
   const speakingRef = useRef(false);
@@ -74,7 +111,8 @@ export default function Home() {
 
   transcriptRef.current = transcript;
   interimRef.current = interim;
-  voiceRef.current = voice;
+  voiceModeRef.current = voiceMode;
+  voicePickRef.current = voicePick;
   sessionActiveRef.current = sessionActive;
 
   // Pre-pick an English TTS voice; voices often load async.
@@ -90,17 +128,47 @@ export default function Home() {
         voices.find((v) => v.lang.startsWith("en")) ??
         voices[0] ??
         null;
+      setBrowserVoices(
+        voices.filter((v) => v.lang.startsWith("en")).map((v) => v.name)
+      );
     };
     pick();
     window.speechSynthesis.addEventListener("voiceschanged", pick);
     return () => window.speechSynthesis.removeEventListener("voiceschanged", pick);
   }, []);
 
+  // Restore the voice choice from the last session.
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("split-voice") ?? "null");
+      if (saved?.mode) setVoiceMode(saved.mode as VoiceMode);
+      if (saved?.pick) setVoicePick((p) => ({ ...p, ...saved.pick }));
+    } catch {
+      /* corrupted storage — keep defaults */
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "split-voice",
+        JSON.stringify({ mode: voiceMode, pick: voicePick })
+      );
+    } catch {
+      /* private mode — not persisted */
+    }
+  }, [voiceMode, voicePick]);
+
   // Verify server setup once on load so a missing key never fails silently.
   useEffect(() => {
     fetch("/api/health")
       .then((r) => r.json())
-      .then((h) => setAiConfigured(!!h.ai))
+      .then((h) => {
+        setAiConfigured(!!h.ai);
+        setTtsAvailable({
+          elevenlabs: !!h.tts?.elevenlabs,
+          gemini: !!h.tts?.gemini,
+        });
+      })
       .catch(() => setAiConfigured(null));
   }, []);
 
@@ -156,12 +224,20 @@ export default function Home() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
-  const playGeminiTts = useCallback(async (text: string): Promise<boolean> => {
+  const playRemoteTts = useCallback(async (text: string): Promise<boolean> => {
     try {
+      const mode = voiceModeRef.current;
       const res = await fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({
+          text,
+          provider: mode,
+          voice:
+            mode === "elevenlabs"
+              ? voicePickRef.current.elevenlabs
+              : voicePickRef.current.gemini,
+        }),
         signal: AbortSignal.timeout(15000), // slow TTS → fall back, don't stall
       });
       if (!res.ok) return false;
@@ -193,7 +269,12 @@ export default function Home() {
       utter.rate = 1.05;
       utter.volume = 1;
       utter.lang = "en-US";
-      if (ttsVoiceRef.current) utter.voice = ttsVoiceRef.current;
+      const pickedName = voicePickRef.current.browser;
+      const picked = pickedName
+        ? window.speechSynthesis.getVoices().find((v) => v.name === pickedName)
+        : null;
+      const chosen = picked ?? ttsVoiceRef.current;
+      if (chosen) utter.voice = chosen;
 
       // Chrome silently pauses long utterances; nudge it while speaking.
       const keepAlive = setInterval(() => window.speechSynthesis.resume(), 4000);
@@ -234,17 +315,19 @@ export default function Home() {
       // small beat after the buzzer so the callout isn't drowned out
       await new Promise((r) => setTimeout(r, 450));
       const text = ttsText(next);
-      const spoken = await playGeminiTts(text);
+      const mode = voiceModeRef.current;
+      // AI providers fall back to the browser voice; browser mode goes direct.
+      const spoken = mode === "browser" ? false : await playRemoteTts(text);
       if (!spoken) await speakWithBrowserTts(text);
       speakingRef.current = false;
       setSpeakingFinding(null);
       drainSpeakQueue();
     })();
-  }, [start, stop, buzzer, playGeminiTts, speakWithBrowserTts]);
+  }, [start, stop, buzzer, playRemoteTts, speakWithBrowserTts]);
 
   const interrupt = useCallback(
     (fresh: Finding[]) => {
-      if (voiceRef.current) {
+      if (voiceModeRef.current !== "off") {
         speakQueueRef.current.push(...fresh);
         drainSpeakQueue();
       } else {
@@ -473,11 +556,11 @@ export default function Home() {
         <WaveBar active={sessionActive} />
         <div className="controls">
           <button
-            className={`side-btn ${voice ? "active" : ""}`}
-            onClick={() => setVoice((v) => !v)}
-            title="Spoken interruptions"
+            className={`side-btn ${voiceMode !== "off" ? "active" : ""}`}
+            onClick={() => setPickerOpen(true)}
+            title="Choose the referee's voice"
           >
-            {voice ? "🔊 Voice" : "🔇 Muted"}
+            {MODE_LABEL[voiceMode]}
           </button>
           <button
             className={`mic-btn ${sessionActive ? "listening" : ""}`}
@@ -503,6 +586,157 @@ export default function Home() {
                 : "Mic off"}
         </div>
       </div>
+
+      {pickerOpen && (
+        <div className="picker-overlay" onClick={() => setPickerOpen(false)}>
+          <div className="picker-card" onClick={(e) => e.stopPropagation()}>
+            <h2>Referee voice</h2>
+
+            <label className={`picker-row ${voiceMode === "browser" ? "selected" : ""}`}>
+              <input
+                type="radio"
+                name="voice-mode"
+                checked={voiceMode === "browser"}
+                onChange={() => setVoiceMode("browser")}
+              />
+              <span className="row-main">
+                <span className="row-title">Browser voice</span>
+                <span className="row-sub">Free, instant, on-device (default)</span>
+              </span>
+            </label>
+            {voiceMode === "browser" && browserVoices.length > 0 && (
+              <select
+                className="picker-select"
+                value={voicePick.browser}
+                onChange={(e) =>
+                  setVoicePick((p) => ({ ...p, browser: e.target.value }))
+                }
+              >
+                <option value="">Auto (recommended)</option>
+                {browserVoices.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <label
+              className={`picker-row ${voiceMode === "elevenlabs" ? "selected" : ""} ${
+                ttsAvailable.elevenlabs ? "" : "disabled"
+              }`}
+            >
+              <input
+                type="radio"
+                name="voice-mode"
+                disabled={!ttsAvailable.elevenlabs}
+                checked={voiceMode === "elevenlabs"}
+                onChange={() => setVoiceMode("elevenlabs")}
+              />
+              <span className="row-main">
+                <span className="row-title">ElevenLabs</span>
+                <span className="row-sub">
+                  {ttsAvailable.elevenlabs
+                    ? "Most natural — ~80 callouts/month free"
+                    : "Add ELEVENLABS_API_KEY to enable"}
+                </span>
+              </span>
+            </label>
+            {voiceMode === "elevenlabs" && (
+              <select
+                className="picker-select"
+                value={voicePick.elevenlabs}
+                onChange={(e) =>
+                  setVoicePick((p) => ({ ...p, elevenlabs: e.target.value }))
+                }
+              >
+                {ELEVENLABS_VOICES.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <label
+              className={`picker-row ${voiceMode === "gemini" ? "selected" : ""} ${
+                ttsAvailable.gemini ? "" : "disabled"
+              }`}
+            >
+              <input
+                type="radio"
+                name="voice-mode"
+                disabled={!ttsAvailable.gemini}
+                checked={voiceMode === "gemini"}
+                onChange={() => setVoiceMode("gemini")}
+              />
+              <span className="row-main">
+                <span className="row-title">Gemini TTS</span>
+                <span className="row-sub">
+                  {ttsAvailable.gemini
+                    ? "Natural — ~10 callouts/day per model, free"
+                    : "Add GEMINI_API_KEY to enable"}
+                </span>
+              </span>
+            </label>
+            {voiceMode === "gemini" && (
+              <select
+                className="picker-select"
+                value={voicePick.gemini}
+                onChange={(e) =>
+                  setVoicePick((p) => ({ ...p, gemini: e.target.value }))
+                }
+              >
+                {GEMINI_VOICES.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <label className={`picker-row ${voiceMode === "off" ? "selected" : ""}`}>
+              <input
+                type="radio"
+                name="voice-mode"
+                checked={voiceMode === "off"}
+                onChange={() => setVoiceMode("off")}
+              />
+              <span className="row-main">
+                <span className="row-title">Off</span>
+                <span className="row-sub">Chime + vibration only</span>
+              </span>
+            </label>
+
+            <div className="picker-actions">
+              <button
+                className="side-btn"
+                disabled={voiceMode === "off" || speakingRef.current}
+                onClick={() => {
+                  void (async () => {
+                    const sample = "Fact check. This is your debate referee speaking.";
+                    type AudioWindow = Window & {
+                      webkitAudioContext?: typeof AudioContext;
+                    };
+                    const Ctx =
+                      window.AudioContext ?? (window as AudioWindow).webkitAudioContext;
+                    if (Ctx && !audioCtxRef.current) audioCtxRef.current = new Ctx();
+                    void audioCtxRef.current?.resume().catch(() => {});
+                    const ok =
+                      voiceMode === "browser" ? false : await playRemoteTts(sample);
+                    if (!ok) await speakWithBrowserTts(sample);
+                  })();
+                }}
+              >
+                ▶ Test voice
+              </button>
+              <button className="side-btn active" onClick={() => setPickerOpen(false)}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {speakingFinding && (
         <div className="interrupt-overlay" onClick={skipSpeaking}>

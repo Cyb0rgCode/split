@@ -31,14 +31,22 @@ No alerts means the debate is clean. Better debates for both sides.
 5. New findings interrupt the debate mid-conversation: a sharp buzzer cuts
    through the talking, then the referee **calls the lie out loud** —
    "Stop right there, that's a lie! Here's the truth: …" — followed by the
-   correction and source, shown full-screen while it speaks. The voice chain
-   is all free: **ElevenLabs** (if `ELEVENLABS_API_KEY` is set — free plan
-   gives 10,000 credits/month, ~80 callouts, best quality;
-   [elevenlabs.io/app/developers](https://elevenlabs.io/app/developers)) →
-   **Gemini TTS** (each TTS model has its own ≈10 requests/day free quota,
-   and the app falls through the model list to stack them) → the browser's
-   built-in speech synthesis. Listening pauses during the callout and
-   resumes after.
+   correction and source, shown full-screen while it speaks. The **Voice
+   button opens a picker** for the provider and the specific voice, all free:
+   - **Browser voice** (default) — instant, on-device, pick any installed
+     English voice
+   - **ElevenLabs** — most natural; needs `ELEVENLABS_API_KEY` (free plan:
+     10,000 credits/month ≈ 80 callouts;
+     [elevenlabs.io/app/developers](https://elevenlabs.io/app/developers));
+     George, Aria, Sarah, Charlie, or Brian
+   - **Gemini TTS** — natural; uses your existing `GEMINI_API_KEY` (≈10
+     callouts/day per model, and the app stacks the model quotas); Kore,
+     Puck, Charon, Fenrir, Aoede, or Zephyr
+   - **Off** — chime + vibration only
+
+   AI voices fall back to the browser voice automatically on quota/errors,
+   there's a ▶ Test button in the picker, and the choice is remembered on
+   the device. Listening pauses during the callout and resumes after.
    The card also stays woven into the transcript at the point where it
    happened. Toggle **Voice** off for a chime + vibration instead.
    Customize with `ELEVENLABS_VOICE_ID` (default: George — browse the
