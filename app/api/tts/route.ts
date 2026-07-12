@@ -29,6 +29,38 @@ function pcmToWav(pcm: Buffer, sampleRate: number): Buffer {
   return Buffer.concat([header, pcm]);
 }
 
+/** Grok TTS (paid, ~$4.20/M chars) — returns MP3 directly. */
+async function grokTts(text: string): Promise<NextResponse | null> {
+  const key = process.env.XAI_API_KEY;
+  if (!key) return null;
+  try {
+    const res = await fetch("https://api.x.ai/v1/tts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        text,
+        voice_id: process.env.XAI_TTS_VOICE || "eve",
+        language: "en",
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) {
+      console.error("grok tts failed:", res.status, (await res.text()).slice(0, 300));
+      return null; // fall through to Gemini TTS
+    }
+    const audio = await res.arrayBuffer();
+    return new NextResponse(audio, {
+      headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
+    });
+  } catch (err) {
+    console.error("grok tts failed:", err);
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   let text = "";
   try {
@@ -42,9 +74,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Text too long" }, { status: 413 });
   }
 
+  const grok = await grokTts(text);
+  if (grok) return grok;
+
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
-    return NextResponse.json({ error: "Gemini not configured" }, { status: 503 });
+    return NextResponse.json({ error: "No TTS provider configured" }, { status: 503 });
   }
 
   const voice = process.env.GEMINI_TTS_VOICE || "Kore";
