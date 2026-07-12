@@ -20,7 +20,7 @@ Work through the NEW text claim by claim:
    - Only flag clear-cut cases. Passionate disagreement is not a fallacy.
    - Name the fallacy and explain in one short sentence why the quoted statement commits it.
 
-Calibration: do not invent problems — a clean slice of argument produces zero findings, and never re-flag anything already covered by the context. But do not be timid either: a wrong claim stated with confidence is exactly what you exist to catch, and letting it slide defeats your purpose. When you are sure a claim is wrong, flag it. Quotes must be short verbatim excerpts from the NEW text.
+Calibration: do not invent problems — a clean slice of argument produces zero findings. Only flag what appears in the NEW text, but if the NEW text repeats a false claim that was already made earlier in the context, flag it again anyway. And do not be timid: a wrong claim stated with confidence is exactly what you exist to catch, and letting it slide defeats your purpose. When you are sure a claim is wrong, flag it. Quotes must be short verbatim excerpts from the NEW text.
 
 Also report "claims_checked": how many factual claims you evaluated in the NEW text, counting the accurate ones you did not flag.
 
@@ -192,8 +192,11 @@ function sanitizeFindings(raw: unknown): Finding[] {
     const f = item as Record<string, unknown>;
     const quote = typeof f.quote === "string" ? f.quote.trim() : "";
     if (!quote) continue;
-    if (f.type === "fact_check") {
-      const verdict = f.verdict;
+    const type = typeof f.type === "string" ? f.type.toLowerCase().replace(/-/g, "_") : "";
+    if (type === "fact_check") {
+      // Models sometimes capitalize despite the schema — don't drop findings over it.
+      const verdict =
+        typeof f.verdict === "string" ? f.verdict.toLowerCase().trim() : "";
       if (verdict !== "false" && verdict !== "misleading" && verdict !== "unverifiable") continue;
       if (typeof f.correction !== "string" || !f.correction.trim()) continue;
       findings.push({
@@ -209,7 +212,7 @@ function sanitizeFindings(raw: unknown): Finding[] {
         search_query:
           typeof f.search_query === "string" ? f.search_query.trim() : undefined,
       });
-    } else if (f.type === "fallacy") {
+    } else if (type === "fallacy") {
       if (typeof f.fallacy_name !== "string" || !f.fallacy_name.trim()) continue;
       findings.push({
         type: "fallacy",

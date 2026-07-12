@@ -115,7 +115,8 @@ export default function Home() {
   const lastChunkRef = useRef("");
   const pendingSinceRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
-  const seenQuotesRef = useRef<Set<string>>(new Set());
+  /** Quote → when it was last flagged; repeats re-alert after 3 minutes. */
+  const seenQuotesRef = useRef<Map<string, number>>(new Map());
   const nextIdRef = useRef(1);
   const voiceModeRef = useRef<VoiceMode>(voiceMode);
   const voicePickRef = useRef<VoicePick>(voicePick);
@@ -475,12 +476,19 @@ export default function Home() {
       pendingSinceRef.current = null;
 
       const data: AnalyzeResponse = await res.json();
+      const now = Date.now();
       const fresh = data.findings.filter((f) => {
         const key = `${f.type}:${normalizeQuote(f.quote)}`;
-        if (seenQuotesRef.current.has(key)) return false;
-        seenQuotesRef.current.add(key);
+        const lastFlagged = seenQuotesRef.current.get(key);
+        if (lastFlagged && now - lastFlagged < 180000) return false;
+        seenQuotesRef.current.set(key, now);
         return true;
       });
+      const note = (text: string) => {
+        setAllClear(text);
+        if (allClearTimerRef.current) clearTimeout(allClearTimerRef.current);
+        allClearTimerRef.current = setTimeout(() => setAllClear(null), 8000);
+      };
       if (fresh.length > 0) {
         setFindings((prev) => [
           ...prev,
@@ -491,12 +499,13 @@ export default function Home() {
           })),
         ]);
         interrupt(fresh);
+      } else if (data.findings.length > 0) {
+        // Flagged, but identical to a recent callout — don't claim "accurate".
+        note("⚠ repeated claim — already called out");
       } else if ((data.claims_checked ?? 0) > 0) {
         // Prove the referee is working even when nobody is wrong.
         const n = data.claims_checked!;
-        setAllClear(`✓ ${n} claim${n === 1 ? "" : "s"} checked — all accurate`);
-        if (allClearTimerRef.current) clearTimeout(allClearTimerRef.current);
-        allClearTimerRef.current = setTimeout(() => setAllClear(null), 8000);
+        note(`✓ ${n} claim${n === 1 ? "" : "s"} checked — all accurate`);
       }
     } catch {
       lastChunkRef.current = ""; // failed — let the next tick retry this chunk
