@@ -31,10 +31,13 @@ No alerts means the debate is clean. Better debates for both sides.
 5. New findings interrupt the debate mid-conversation: a sharp buzzer cuts
    through the talking, then the referee **calls the lie out loud** —
    "Stop right there, that's a lie! Here's the truth: …" — followed by the
-   correction and source (browser text-to-speech — free, on-device), shown
-   full-screen while it speaks. Listening pauses during the callout and
-   resumes after. The card also stays woven into the transcript at the point
-   where it happened. Toggle **Voice** off for a chime + vibration instead.
+   correction and source, shown full-screen while it speaks. The voice is
+   **Gemini TTS** (natural-sounding; free tier ≈10 requests/day) and falls
+   back automatically to the browser's built-in speech synthesis when the
+   quota is spent. Listening pauses during the callout and resumes after.
+   The card also stays woven into the transcript at the point where it
+   happened. Toggle **Voice** off for a chime + vibration instead.
+   Customize with `GEMINI_TTS_VOICE` (default `Kore`) or `GEMINI_TTS_MODEL`.
 
 ## Setup
 

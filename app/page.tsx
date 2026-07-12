@@ -12,7 +12,8 @@ interface PlacedFinding {
   offset: number;
 }
 
-const ANALYZE_INTERVAL_MS = 4000;
+// Gemini free tier allows 15 requests/min — 5s ticks keep us safely under.
+const ANALYZE_INTERVAL_MS = 5000;
 const MIN_CHUNK_CHARS = 40;
 const MAX_WAIT_MS = 10000;
 const CONTEXT_CHARS = 1500;
@@ -148,8 +149,74 @@ export default function Home() {
   }, []);
 
   /* ── Spoken interruptions ─────────────────────────────────────────────
-     While the referee talks, speech recognition is paused so the app
-     doesn't transcribe (and fact-check) its own voice. */
+     Gemini TTS first (natural voice), browser speech synthesis as the
+     fallback when the TTS quota is spent or the request fails. While the
+     referee talks, speech recognition is paused so the app doesn't
+     transcribe (and fact-check) its own voice. */
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+  const playGeminiTts = useCallback(async (text: string): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: AbortSignal.timeout(10000), // slow TTS → fall back, don't stall
+      });
+      if (!res.ok) return false;
+      const wav = await res.arrayBuffer();
+      const ctx = audioCtxRef.current;
+      if (!ctx) return false;
+      if (ctx.state === "suspended") await ctx.resume();
+      const buffer = await ctx.decodeAudioData(wav);
+      return await new Promise<boolean>((resolve) => {
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.connect(ctx.destination);
+        ttsSourceRef.current = src;
+        src.onended = () => {
+          ttsSourceRef.current = null;
+          resolve(true);
+        };
+        src.start();
+      });
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const speakWithBrowserTts = useCallback((text: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (!("speechSynthesis" in window)) return resolve();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 1.05;
+      utter.volume = 1;
+      utter.lang = "en-US";
+      if (ttsVoiceRef.current) utter.voice = ttsVoiceRef.current;
+
+      // Chrome silently pauses long utterances; nudge it while speaking.
+      const keepAlive = setInterval(() => window.speechSynthesis.resume(), 4000);
+      let finished = false;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        clearInterval(keepAlive);
+        clearTimeout(watchdog);
+        resolve();
+      };
+      // Some browsers never fire onend after a cancel — don't wedge the queue.
+      const watchdog = setTimeout(() => {
+        window.speechSynthesis.cancel();
+        done();
+      }, 25000);
+      utter.onend = done;
+      utter.onerror = done;
+      window.speechSynthesis.cancel(); // clear any stuck queue first
+      window.speechSynthesis.speak(utter);
+    });
+  }, []);
+
   const drainSpeakQueue = useCallback(() => {
     if (speakingRef.current) return;
     const next = speakQueueRef.current.shift();
@@ -163,41 +230,21 @@ export default function Home() {
     if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
     buzzer(); // grab the room's attention before speaking
 
-    const utter = new SpeechSynthesisUtterance(ttsText(next));
-    utter.rate = 1.05;
-    utter.volume = 1;
-    utter.lang = "en-US";
-    if (ttsVoiceRef.current) utter.voice = ttsVoiceRef.current;
-
-    // Chrome silently pauses long utterances; nudge it while speaking.
-    const keepAlive = setInterval(() => window.speechSynthesis.resume(), 4000);
-    let finished = false;
-    const done = () => {
-      if (finished) return;
-      finished = true;
-      clearInterval(keepAlive);
-      clearTimeout(watchdog);
+    void (async () => {
+      // small beat after the buzzer so the callout isn't drowned out
+      await new Promise((r) => setTimeout(r, 450));
+      const text = ttsText(next);
+      const spoken = await playGeminiTts(text);
+      if (!spoken) await speakWithBrowserTts(text);
       speakingRef.current = false;
       setSpeakingFinding(null);
       drainSpeakQueue();
-    };
-    // Some browsers never fire onend after a cancel — don't wedge the queue.
-    const watchdog = setTimeout(() => {
-      window.speechSynthesis.cancel();
-      done();
-    }, 25000);
-    utter.onend = done;
-    utter.onerror = done;
-    // small beat after the buzzer so the callout isn't drowned out
-    setTimeout(() => {
-      window.speechSynthesis.cancel(); // clear any stuck queue first
-      window.speechSynthesis.speak(utter);
-    }, 450);
-  }, [start, stop, buzzer]);
+    })();
+  }, [start, stop, buzzer, playGeminiTts, speakWithBrowserTts]);
 
   const interrupt = useCallback(
     (fresh: Finding[]) => {
-      if (voiceRef.current && "speechSynthesis" in window) {
+      if (voiceRef.current) {
         speakQueueRef.current.push(...fresh);
         drainSpeakQueue();
       } else {
@@ -208,7 +255,12 @@ export default function Home() {
   );
 
   const skipSpeaking = useCallback(() => {
-    window.speechSynthesis.cancel(); // fires onend/onerror → queue drains
+    window.speechSynthesis?.cancel(); // fires onend/onerror → queue drains
+    try {
+      ttsSourceRef.current?.stop(); // fires onended → queue drains
+    } catch {
+      /* already stopped */
+    }
   }, []);
 
   /* ── Analysis loop ──────────────────────────────────────────────────── */
@@ -293,8 +345,13 @@ export default function Home() {
   const handleStart = useCallback(() => {
     setApiError(null);
     setSessionActive(true);
-    // Unlock speech synthesis on this user gesture (required on iOS):
-    // speaking a silent utterance from a tap grants audio for later callouts.
+    // Unlock audio output on this user gesture (required on iOS): resume the
+    // playback AudioContext for Gemini TTS and speak a silent utterance so
+    // browser speech synthesis is also allowed for later callouts.
+    type AudioWindow = Window & { webkitAudioContext?: typeof AudioContext };
+    const Ctx = window.AudioContext ?? (window as AudioWindow).webkitAudioContext;
+    if (Ctx && !audioCtxRef.current) audioCtxRef.current = new Ctx();
+    void audioCtxRef.current?.resume().catch(() => {});
     if ("speechSynthesis" in window) {
       window.speechSynthesis.cancel();
       const unlock = new SpeechSynthesisUtterance(" ");
@@ -308,6 +365,11 @@ export default function Home() {
     setSessionActive(false);
     speakQueueRef.current = [];
     window.speechSynthesis?.cancel();
+    try {
+      ttsSourceRef.current?.stop();
+    } catch {
+      /* already stopped */
+    }
     stop();
     pendingSinceRef.current = 0; // force the final short chunk through
     void analyze();
