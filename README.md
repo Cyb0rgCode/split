@@ -112,6 +112,11 @@ Open `http://localhost:3000`, allow microphone access, press
 - The referee is deliberately conservative: opinions and vague claims are
   ignored. Test it with something concrete and clearly wrong, e.g. "the Great
   Wall of China is visible from the Moon" or "unemployment is 40 percent".
+- **Measure it instead of guessing:** `node scripts/eval.mjs
+  https://your-app.vercel.app` sends 10 famous myths plus 2 controls at the
+  analyzer and prints which were caught (uses ~12 free-tier requests). If
+  recall is low, set `GEMINI_MODEL=gemini-3.5-flash` — much sharper, but its
+  free tier is only ~20 requests/day, so it suits demos over daily use.
 - Speech recognition needs Chrome, Edge, or Safari over HTTPS (or localhost),
   with mic permission granted.
 - **Hearing the robotic browser voice instead of the AI voice?** Open

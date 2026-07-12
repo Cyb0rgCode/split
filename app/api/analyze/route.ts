@@ -10,7 +10,7 @@ Work through the NEW text claim by claim:
 
 1. FACT CHECKS — evaluate EVERY concrete, checkable factual claim (statistics, numbers, dates, events, laws, science, history, geography) against well-established knowledge.
    - Flag any claim that is false or significantly misleading. A statistic far from the accepted figure is "false"; a technically-true claim framed to deceive is "misleading". Use "unverifiable" for specific suspicious statistics that cannot be confirmed.
-   - Flag confidently wrong claims even when they are popular myths (e.g. "the Great Wall of China is visible from space with the naked eye").
+   - Popular myths count as FALSE even though millions of people repeat them. Canonical examples you must always flag: "the Great Wall of China is visible from space/the Moon", "humans only use 10% of their brains", "goldfish have a 3-second memory", "Einstein failed math", "Napoleon was unusually short", "sugar makes children hyperactive", "lightning never strikes the same place twice", "you lose most of your body heat through your head", "bulls are enraged by the color red", "we swallow spiders in our sleep". Anything of this genre — a widely repeated factoid contradicted by science or history — is a flag.
    - Do NOT flag: opinions, predictions, moral or value judgments, personal anecdotes, obvious hyperbole ("a million times"), or claims that are approximately correct (reasonable rounding is fine).
    - "correction" states the correct fact or figure plainly, in one or two sentences.
    - Cite a real, well-known authoritative source (e.g. WHO, BLS, US Census Bureau, NASA, FBI, peer-reviewed bodies, official statistics agencies) with a plausible canonical URL for that organization. Never invent an organization.
@@ -22,21 +22,24 @@ Work through the NEW text claim by claim:
 
 Calibration: do not invent problems — a clean slice of argument produces zero findings. Only flag what appears in the NEW text, but if the NEW text repeats a false claim that was already made earlier in the context, flag it again anyway. And do not be timid: a wrong claim stated with confidence is exactly what you exist to catch, and letting it slide defeats your purpose. When you are sure a claim is wrong, flag it. Quotes must be short verbatim excerpts from the NEW text.
 
-Also report "claims_checked": how many factual claims you evaluated in the NEW text, counting the accurate ones you did not flag.
+Method — think before you answer. Fill the JSON fields in this exact order:
+1. "analysis": your scratchpad. Go claim by claim through the NEW text; for each factual claim write one terse sentence ending in a verdict word: TRUE, FALSE, MISLEADING, or OPINION, with the reason. Note any fallacy here too. Be brutally honest — this field is never shown to the debaters.
+2. "claims_checked": how many factual claims your analysis covered, including the TRUE ones.
+3. "findings": one entry for EVERY claim your analysis marked FALSE or MISLEADING, plus each clear fallacy. If your analysis says FALSE, that claim MUST appear in findings — a FALSE in the analysis with an empty findings list is a contradiction and always wrong.
 
 Examples:
 
 NEW text: "crime is at an all-time high right now and you know it"
-{"claims_checked": 1, "findings": [{"type": "fact_check", "quote": "crime is at an all-time high", "verdict": "false", "correction": "U.S. violent crime has fallen sharply since the early 1990s and is near multi-decade lows, not at an all-time high.", "source_name": "FBI Crime Data Explorer", "source_url": "https://cde.ucr.cjis.gov", "search_query": "US violent crime rate trend FBI"}]}
+{"analysis": "Claim: crime at an all-time high — FALSE, US violent crime is near multi-decade lows.", "claims_checked": 1, "findings": [{"type": "fact_check", "quote": "crime is at an all-time high", "verdict": "false", "correction": "U.S. violent crime has fallen sharply since the early 1990s and is near multi-decade lows, not at an all-time high.", "source_name": "FBI Crime Data Explorer", "source_url": "https://cde.ucr.cjis.gov", "search_query": "US violent crime rate trend FBI"}]}
 
 NEW text: "well I just think raising taxes is a terrible idea and it always backfires"
-{"claims_checked": 0, "findings": []}
+{"analysis": "Raising taxes is terrible — OPINION. It always backfires — vague prediction, not a checkable claim.", "claims_checked": 0, "findings": []}
 
 NEW text: "of course you'd defend him you work for him so your opinion doesn't count"
-{"claims_checked": 0, "findings": [{"type": "fallacy", "fallacy_name": "ad hominem", "quote": "you work for him so your opinion doesn't count", "explanation": "It dismisses the argument by attacking the speaker's circumstances instead of the argument itself."}]}
+{"analysis": "No factual claims. Dismissing the opinion because of who employs him — ad hominem.", "claims_checked": 0, "findings": [{"type": "fallacy", "fallacy_name": "ad hominem", "quote": "you work for him so your opinion doesn't count", "explanation": "It dismisses the argument by attacking the speaker's circumstances instead of the argument itself."}]}
 
 Respond with JSON only, matching this schema:
-{"claims_checked": number, "findings": [
+{"analysis": string, "claims_checked": number, "findings": [
   {"type": "fact_check", "quote": string, "verdict": "false"|"misleading"|"unverifiable", "correction": string, "source_name": string, "source_url": string, "search_query": string},
   {"type": "fallacy", "fallacy_name": string, "quote": string, "explanation": string}
 ]}`;
@@ -50,7 +53,11 @@ function buildUserPrompt(chunk: string, context?: string): string {
 
 const GEMINI_RESPONSE_SCHEMA = {
   type: "OBJECT",
+  // analysis first: the model must reason claim-by-claim before it commits
+  // to findings, which is what makes small models actually catch myths.
+  propertyOrdering: ["analysis", "claims_checked", "findings"],
   properties: {
+    analysis: { type: "STRING" },
     claims_checked: { type: "INTEGER" },
     findings: {
       type: "ARRAY",
@@ -74,7 +81,7 @@ const GEMINI_RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ["claims_checked", "findings"],
+  required: ["analysis", "claims_checked", "findings"],
 };
 
 /* Tried in order; a 404 (model renamed/retired) falls through to the next. */
@@ -283,6 +290,10 @@ export async function POST(req: NextRequest) {
       : await callNvidiaNim(chunk, context);
     const parsed = extractJson(raw);
     const findings = sanitizeFindings(parsed?.findings);
+    // Visible in Vercel function logs — the model's claim-by-claim reasoning.
+    if (typeof (parsed as { analysis?: unknown })?.analysis === "string") {
+      console.log("analysis:", (parsed as { analysis: string }).analysis.slice(0, 500));
+    }
     await attachLiveSources(findings);
     const claimsChecked =
       typeof parsed?.claims_checked === "number" && parsed.claims_checked >= 0
