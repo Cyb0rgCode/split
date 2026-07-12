@@ -31,15 +31,14 @@ No alerts means the debate is clean. Better debates for both sides.
 5. New findings interrupt the debate mid-conversation: a sharp buzzer cuts
    through the talking, then the referee **calls the lie out loud** —
    "Stop right there, that's a lie! Here's the truth: …" — followed by the
-   correction and source, shown full-screen while it speaks. The voice chain
-   is **Grok TTS** (if `XAI_API_KEY` is set — paid, ~$4.20/M characters, best
-   quality) → **Gemini TTS** (free tier ≈10 requests/day) → the browser's
-   built-in speech synthesis, falling through automatically on quota or
-   errors. Listening pauses during the callout and resumes after.
+   correction and source, shown full-screen while it speaks. The voice is
+   **Gemini TTS** (each TTS model has its own ≈10 requests/day free quota,
+   and the app falls through the model list to stack them) with the
+   browser's built-in speech synthesis as the final fallback — everything
+   free. Listening pauses during the callout and resumes after.
    The card also stays woven into the transcript at the point where it
    happened. Toggle **Voice** off for a chime + vibration instead.
-   Customize with `XAI_TTS_VOICE` (eve, ara, rex, sal, leo),
-   `GEMINI_TTS_VOICE` (default `Kore`), or `GEMINI_TTS_MODEL`.
+   Customize with `GEMINI_TTS_VOICE` (default `Kore`) or `GEMINI_TTS_MODEL`.
 
 ## Setup
 

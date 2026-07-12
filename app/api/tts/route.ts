@@ -36,42 +36,6 @@ interface TtsAttempt {
   error?: string;
 }
 
-/** Grok TTS (paid, ~$4.20/M chars) — returns MP3 directly. */
-async function grokTts(
-  text: string,
-  attempts: TtsAttempt[]
-): Promise<ArrayBuffer | null> {
-  const key = process.env.XAI_API_KEY;
-  if (!key) return null;
-  try {
-    const res = await fetch("https://api.x.ai/v1/tts", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        text,
-        voice_id: process.env.XAI_TTS_VOICE || "eve",
-        language: "en",
-      }),
-      signal: AbortSignal.timeout(12000),
-    });
-    if (!res.ok) {
-      attempts.push({
-        provider: "grok",
-        status: res.status,
-        error: (await res.text()).slice(0, 300),
-      });
-      return null; // fall through to Gemini TTS
-    }
-    return await res.arrayBuffer();
-  } catch (err) {
-    attempts.push({ provider: "grok", status: 0, error: String(err).slice(0, 300) });
-    return null;
-  }
-}
-
 async function geminiTtsModel(
   model: string,
   text: string,
@@ -168,13 +132,6 @@ export async function POST(req: NextRequest) {
 
   const attempts: TtsAttempt[] = [];
 
-  const grok = await grokTts(text, attempts);
-  if (grok) {
-    return new NextResponse(grok, {
-      headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
-    });
-  }
-
   if (process.env.GEMINI_API_KEY) {
     for (const model of geminiModelList()) {
       const wav = await geminiTtsModel(model, text, attempts);
@@ -206,34 +163,22 @@ export async function GET() {
   const text = "Test.";
   let working: string | null = null;
 
-  if (process.env.XAI_API_KEY) {
-    const grok = await grokTts(text, attempts);
-    if (grok) {
-      working = "grok";
-      attempts.push({ provider: "grok", status: 200 });
+  if (process.env.GEMINI_API_KEY) {
+    for (const model of geminiModelList()) {
+      const wav = await geminiTtsModel(model, text, attempts);
+      if (wav) {
+        working = `gemini:${model}`;
+        attempts.push({ provider: `gemini:${model}`, status: 200 });
+        break;
+      }
+      if (isFatal(attempts[attempts.length - 1])) break;
     }
   } else {
-    attempts.push({ provider: "grok", status: 503, error: "XAI_API_KEY not set (optional)" });
-  }
-
-  if (!working) {
-    if (process.env.GEMINI_API_KEY) {
-      for (const model of geminiModelList()) {
-        const wav = await geminiTtsModel(model, text, attempts);
-        if (wav) {
-          working = `gemini:${model}`;
-          attempts.push({ provider: `gemini:${model}`, status: 200 });
-          break;
-        }
-        if (isFatal(attempts[attempts.length - 1])) break;
-      }
-    } else {
-      attempts.push({
-        provider: "gemini",
-        status: 503,
-        error: "GEMINI_API_KEY not set",
-      });
-    }
+    attempts.push({
+      provider: "gemini",
+      status: 503,
+      error: "GEMINI_API_KEY not set",
+    });
   }
 
   return NextResponse.json({
