@@ -58,7 +58,9 @@ export default function Home() {
   const allClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const transcriptRef = useRef("");
+  const interimRef = useRef("");
   const analyzedRef = useRef(0);
+  const lastChunkRef = useRef("");
   const pendingSinceRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
   const seenQuotesRef = useRef<Set<string>>(new Set());
@@ -70,8 +72,28 @@ export default function Home() {
   const transcriptElRef = useRef<HTMLDivElement>(null);
 
   transcriptRef.current = transcript;
+  interimRef.current = interim;
   voiceRef.current = voice;
   sessionActiveRef.current = sessionActive;
+
+  // Pre-pick an English TTS voice; voices often load async.
+  const ttsVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  useEffect(() => {
+    if (!("speechSynthesis" in window)) return;
+    const pick = () => {
+      const voices = window.speechSynthesis.getVoices();
+      ttsVoiceRef.current =
+        voices.find(
+          (v) => v.lang.startsWith("en") && /Google US|Samantha|Aria|Zira/i.test(v.name)
+        ) ??
+        voices.find((v) => v.lang.startsWith("en")) ??
+        voices[0] ??
+        null;
+    };
+    pick();
+    window.speechSynthesis.addEventListener("voiceschanged", pick);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", pick);
+  }, []);
 
   // Verify server setup once on load so a missing key never fails silently.
   useEffect(() => {
@@ -144,15 +166,33 @@ export default function Home() {
     const utter = new SpeechSynthesisUtterance(ttsText(next));
     utter.rate = 1.05;
     utter.volume = 1;
+    utter.lang = "en-US";
+    if (ttsVoiceRef.current) utter.voice = ttsVoiceRef.current;
+
+    // Chrome silently pauses long utterances; nudge it while speaking.
+    const keepAlive = setInterval(() => window.speechSynthesis.resume(), 4000);
+    let finished = false;
     const done = () => {
+      if (finished) return;
+      finished = true;
+      clearInterval(keepAlive);
+      clearTimeout(watchdog);
       speakingRef.current = false;
       setSpeakingFinding(null);
       drainSpeakQueue();
     };
+    // Some browsers never fire onend after a cancel — don't wedge the queue.
+    const watchdog = setTimeout(() => {
+      window.speechSynthesis.cancel();
+      done();
+    }, 25000);
     utter.onend = done;
     utter.onerror = done;
     // small beat after the buzzer so the callout isn't drowned out
-    setTimeout(() => window.speechSynthesis.speak(utter), 450);
+    setTimeout(() => {
+      window.speechSynthesis.cancel(); // clear any stuck queue first
+      window.speechSynthesis.speak(utter);
+    }, 450);
   }, [start, stop, buzzer]);
 
   const interrupt = useCallback(
@@ -174,9 +214,15 @@ export default function Home() {
   /* ── Analysis loop ──────────────────────────────────────────────────── */
   const analyze = useCallback(async () => {
     if (inFlightRef.current) return;
-    const full = transcriptRef.current;
-    const chunk = full.slice(analyzedRef.current).trim();
+    const finalText = transcriptRef.current;
+    // Include words still being spoken so continuous talkers get checked
+    // without waiting for a pause. Only finalized text advances the analyzed
+    // pointer — the live tail is re-sent next tick and deduped by quote.
+    const live = interimRef.current.trim();
+    const combined = live ? `${finalText} ${live}` : finalText;
+    const chunk = combined.slice(analyzedRef.current).trim();
     if (!chunk) return;
+    if (chunk === lastChunkRef.current) return; // nothing new since last send
 
     const pendingSince = pendingSinceRef.current ?? Date.now();
     pendingSinceRef.current = pendingSince;
@@ -184,10 +230,11 @@ export default function Home() {
     if (chunk.length < MIN_CHUNK_CHARS && !waitedLongEnough) return;
 
     inFlightRef.current = true;
-    const sentUpTo = full.length;
+    lastChunkRef.current = chunk;
+    const sentUpTo = finalText.length;
     setAnalyzing(true);
     try {
-      const context = full
+      const context = finalText
         .slice(Math.max(0, analyzedRef.current - CONTEXT_CHARS), analyzedRef.current)
         .trim();
       const res = await fetch("/api/analyze", {
@@ -246,9 +293,13 @@ export default function Home() {
   const handleStart = useCallback(() => {
     setApiError(null);
     setSessionActive(true);
-    // Unlock speech synthesis on this user gesture (required on iOS).
+    // Unlock speech synthesis on this user gesture (required on iOS):
+    // speaking a silent utterance from a tap grants audio for later callouts.
     if ("speechSynthesis" in window) {
       window.speechSynthesis.cancel();
+      const unlock = new SpeechSynthesisUtterance(" ");
+      unlock.volume = 0;
+      window.speechSynthesis.speak(unlock);
     }
     start();
   }, [start]);
@@ -267,6 +318,7 @@ export default function Home() {
     setFindings([]);
     setApiError(null);
     analyzedRef.current = 0;
+    lastChunkRef.current = "";
     pendingSinceRef.current = null;
     seenQuotesRef.current.clear();
   }, [reset]);
