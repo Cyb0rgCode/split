@@ -31,14 +31,18 @@ No alerts means the debate is clean. Better debates for both sides.
 5. New findings interrupt the debate mid-conversation: a sharp buzzer cuts
    through the talking, then the referee **calls the lie out loud** —
    "Stop right there, that's a lie! Here's the truth: …" — followed by the
-   correction and source, shown full-screen while it speaks. The voice is
+   correction and source, shown full-screen while it speaks. The voice chain
+   is all free: **ElevenLabs** (if `ELEVENLABS_API_KEY` is set — free plan
+   gives 10,000 credits/month, ~80 callouts, best quality;
+   [elevenlabs.io/app/developers](https://elevenlabs.io/app/developers)) →
    **Gemini TTS** (each TTS model has its own ≈10 requests/day free quota,
-   and the app falls through the model list to stack them) with the
-   browser's built-in speech synthesis as the final fallback — everything
-   free. Listening pauses during the callout and resumes after.
+   and the app falls through the model list to stack them) → the browser's
+   built-in speech synthesis. Listening pauses during the callout and
+   resumes after.
    The card also stays woven into the transcript at the point where it
    happened. Toggle **Voice** off for a chime + vibration instead.
-   Customize with `GEMINI_TTS_VOICE` (default `Kore`) or `GEMINI_TTS_MODEL`.
+   Customize with `ELEVENLABS_VOICE_ID` (default: Rachel),
+   `GEMINI_TTS_VOICE` (default `Kore`), or `GEMINI_TTS_MODEL`.
 
 ## Setup
 

@@ -36,6 +36,48 @@ interface TtsAttempt {
   error?: string;
 }
 
+/** ElevenLabs TTS — free plan: 10,000 credits/month, ~0.5 credit per
+    character on the flash model. Returns MP3 directly. */
+async function elevenLabsTts(
+  text: string,
+  attempts: TtsAttempt[]
+): Promise<ArrayBuffer | null> {
+  const key = process.env.ELEVENLABS_API_KEY;
+  if (!key) return null;
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Rachel
+  const modelId = process.env.ELEVENLABS_MODEL || "eleven_flash_v2_5";
+  try {
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "xi-api-key": key,
+        },
+        body: JSON.stringify({ text, model_id: modelId }),
+        signal: AbortSignal.timeout(12000),
+      }
+    );
+    if (!res.ok) {
+      attempts.push({
+        provider: "elevenlabs",
+        status: res.status,
+        error: (await res.text()).slice(0, 300),
+      });
+      return null; // fall through to Gemini TTS
+    }
+    return await res.arrayBuffer();
+  } catch (err) {
+    attempts.push({
+      provider: "elevenlabs",
+      status: 0,
+      error: String(err).slice(0, 300),
+    });
+    return null;
+  }
+}
+
 async function geminiTtsModel(
   model: string,
   text: string,
@@ -132,6 +174,13 @@ export async function POST(req: NextRequest) {
 
   const attempts: TtsAttempt[] = [];
 
+  const eleven = await elevenLabsTts(text, attempts);
+  if (eleven) {
+    return new NextResponse(eleven, {
+      headers: { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" },
+    });
+  }
+
   if (process.env.GEMINI_API_KEY) {
     for (const model of geminiModelList()) {
       const wav = await geminiTtsModel(model, text, attempts);
@@ -163,22 +212,38 @@ export async function GET() {
   const text = "Test.";
   let working: string | null = null;
 
-  if (process.env.GEMINI_API_KEY) {
-    for (const model of geminiModelList()) {
-      const wav = await geminiTtsModel(model, text, attempts);
-      if (wav) {
-        working = `gemini:${model}`;
-        attempts.push({ provider: `gemini:${model}`, status: 200 });
-        break;
-      }
-      if (isFatal(attempts[attempts.length - 1])) break;
+  if (process.env.ELEVENLABS_API_KEY) {
+    const eleven = await elevenLabsTts(text, attempts);
+    if (eleven) {
+      working = "elevenlabs";
+      attempts.push({ provider: "elevenlabs", status: 200 });
     }
   } else {
     attempts.push({
-      provider: "gemini",
+      provider: "elevenlabs",
       status: 503,
-      error: "GEMINI_API_KEY not set",
+      error: "ELEVENLABS_API_KEY not set (optional)",
     });
+  }
+
+  if (!working) {
+    if (process.env.GEMINI_API_KEY) {
+      for (const model of geminiModelList()) {
+        const wav = await geminiTtsModel(model, text, attempts);
+        if (wav) {
+          working = `gemini:${model}`;
+          attempts.push({ provider: `gemini:${model}`, status: 200 });
+          break;
+        }
+        if (isFatal(attempts[attempts.length - 1])) break;
+      }
+    } else {
+      attempts.push({
+        provider: "gemini",
+        status: 503,
+        error: "GEMINI_API_KEY not set",
+      });
+    }
   }
 
   return NextResponse.json({
