@@ -193,7 +193,7 @@ export default function Home() {
     if (navigator.vibrate) navigator.vibrate(200);
   }, []);
 
-  /** Sharp game-show buzzer that cuts through mid-conversation talking. */
+  /** Sharp game-show buzzer — fallback if the alert sound file fails. */
   const buzzer = useCallback(() => {
     try {
       type AudioWindow = Window & { webkitAudioContext?: typeof AudioContext };
@@ -215,6 +215,57 @@ export default function Home() {
       /* audio is best-effort */
     }
   }, []);
+
+  /* Alert sound played before the referee speaks. Fetched once and decoded
+     lazily against the shared playback AudioContext. */
+  const alertBytesRef = useRef<ArrayBuffer | null>(null);
+  const alertBufferRef = useRef<AudioBuffer | null>(null);
+  const alertSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  useEffect(() => {
+    fetch("/alert.mp3")
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .then((bytes) => {
+        alertBytesRef.current = bytes;
+      })
+      .catch(() => {});
+  }, []);
+
+  /** Plays the alert sound to completion; falls back to the buzzer. */
+  const playAlert = useCallback(async (): Promise<void> => {
+    const ctx = audioCtxRef.current;
+    try {
+      if (ctx) {
+        if (ctx.state === "suspended") await ctx.resume();
+        if (!alertBufferRef.current && alertBytesRef.current) {
+          // decodeAudioData detaches the buffer — hand it a copy
+          alertBufferRef.current = await ctx.decodeAudioData(
+            alertBytesRef.current.slice(0)
+          );
+        }
+        const buffer = alertBufferRef.current;
+        if (buffer) {
+          await new Promise<void>((resolve) => {
+            const src = ctx.createBufferSource();
+            src.buffer = buffer;
+            src.connect(ctx.destination);
+            alertSourceRef.current = src;
+            const safety = setTimeout(resolve, buffer.duration * 1000 + 500);
+            src.onended = () => {
+              clearTimeout(safety);
+              alertSourceRef.current = null;
+              resolve();
+            };
+            src.start();
+          });
+          return;
+        }
+      }
+    } catch {
+      /* fall through to the buzzer */
+    }
+    buzzer();
+    await new Promise((r) => setTimeout(r, 450));
+  }, [buzzer]);
 
   /* ── Spoken interruptions ─────────────────────────────────────────────
      Gemini TTS first (natural voice), browser speech synthesis as the
@@ -309,11 +360,11 @@ export default function Home() {
     stop(); // pause recognition while we talk
     setSpeakingFinding(next);
     if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
-    buzzer(); // grab the room's attention before speaking
 
     void (async () => {
-      // small beat after the buzzer so the callout isn't drowned out
-      await new Promise((r) => setTimeout(r, 450));
+      // grab the room's attention, then a small beat before the callout
+      await playAlert();
+      await new Promise((r) => setTimeout(r, 150));
       const text = ttsText(next);
       const mode = voiceModeRef.current;
       // AI providers fall back to the browser voice; browser mode goes direct.
@@ -323,7 +374,7 @@ export default function Home() {
       setSpeakingFinding(null);
       drainSpeakQueue();
     })();
-  }, [start, stop, buzzer, playRemoteTts, speakWithBrowserTts]);
+  }, [start, stop, playAlert, playRemoteTts, speakWithBrowserTts]);
 
   const interrupt = useCallback(
     (fresh: Finding[]) => {
@@ -341,6 +392,11 @@ export default function Home() {
     window.speechSynthesis?.cancel(); // fires onend/onerror → queue drains
     try {
       ttsSourceRef.current?.stop(); // fires onended → queue drains
+    } catch {
+      /* already stopped */
+    }
+    try {
+      alertSourceRef.current?.stop();
     } catch {
       /* already stopped */
     }
@@ -450,6 +506,11 @@ export default function Home() {
     window.speechSynthesis?.cancel();
     try {
       ttsSourceRef.current?.stop();
+    } catch {
+      /* already stopped */
+    }
+    try {
+      alertSourceRef.current?.stop();
     } catch {
       /* already stopped */
     }
