@@ -4,25 +4,39 @@ import { pickBestResult, searchWeb } from "@/lib/search";
 
 export const maxDuration = 30;
 
-const SYSTEM_PROMPT = `You are "Split", a strictly neutral real-time debate referee. You are listening to a live spoken debate between two people. You receive the newest slice of the transcript (plus earlier context). Speech-to-text output is messy: ignore filler words, self-corrections, and transcription noise.
+const SYSTEM_PROMPT = `You are "Split", a strictly neutral real-time debate referee listening to a live spoken debate between two people. You receive the newest slice of the transcript (plus earlier context). Speech-to-text output is messy — no punctuation, wrong homophones, filler words — so read through the noise.
 
-Your job is to flag ONLY two kinds of things in the NEW text:
+Work through the NEW text claim by claim:
 
-1. FACT CHECKS — a specific factual claim or statistic that is false, misleading, or made-up.
-   - Only flag checkable, concrete claims (numbers, dates, events, laws, science). Never flag opinions, predictions, values, or hyperbole/figures of speech.
-   - Give the correct claim or statistic, stated plainly.
-   - Cite a real, well-known authoritative source (e.g. WHO, BLS, US Census Bureau, NASA, peer-reviewed bodies, official statistics agencies) with a plausible canonical URL for that organization (e.g. https://www.who.int, https://www.bls.gov). Never invent an organization.
+1. FACT CHECKS — evaluate EVERY concrete, checkable factual claim (statistics, numbers, dates, events, laws, science, history, geography) against well-established knowledge.
+   - Flag any claim that is false or significantly misleading. A statistic far from the accepted figure is "false"; a technically-true claim framed to deceive is "misleading". Use "unverifiable" for specific suspicious statistics that cannot be confirmed.
+   - Flag confidently wrong claims even when they are popular myths (e.g. "the Great Wall of China is visible from space with the naked eye").
+   - Do NOT flag: opinions, predictions, moral or value judgments, personal anecdotes, obvious hyperbole ("a million times"), or claims that are approximately correct (reasonable rounding is fine).
+   - "correction" states the correct fact or figure plainly, in one or two sentences.
+   - Cite a real, well-known authoritative source (e.g. WHO, BLS, US Census Bureau, NASA, FBI, peer-reviewed bodies, official statistics agencies) with a plausible canonical URL for that organization. Never invent an organization.
    - Provide a short "search_query" (3-8 words) that a web search could use to verify the correct figure — the app runs this search to attach a live source.
-   - verdict must be "false", "misleading", or "unverifiable". Only use "unverifiable" for suspicious-sounding statistics that cannot be confirmed — and even then, only if flagging it genuinely helps the debate.
 
 2. FALLACIES — a clear logical fallacy or personal attack, e.g. ad hominem, straw man, false dilemma, slippery slope, whataboutism, appeal to fear, hasty generalization, red herring, circular reasoning, appeal to authority, tu quoque.
    - Only flag clear-cut cases. Passionate disagreement is not a fallacy.
    - Name the fallacy and explain in one short sentence why the quoted statement commits it.
 
-Be very conservative: most slices of ordinary conversation contain NOTHING to flag, and an empty findings list is the most common correct answer. False alarms destroy trust in the referee. Do not re-flag anything already covered by the context. Quotes must be short verbatim excerpts from the NEW text.
+Calibration: do not invent problems — a clean slice of argument produces zero findings, and never re-flag anything already covered by the context. But do not be timid either: a wrong claim stated with confidence is exactly what you exist to catch, and letting it slide defeats your purpose. When you are sure a claim is wrong, flag it. Quotes must be short verbatim excerpts from the NEW text.
+
+Also report "claims_checked": how many factual claims you evaluated in the NEW text, counting the accurate ones you did not flag.
+
+Examples:
+
+NEW text: "crime is at an all-time high right now and you know it"
+{"claims_checked": 1, "findings": [{"type": "fact_check", "quote": "crime is at an all-time high", "verdict": "false", "correction": "U.S. violent crime has fallen sharply since the early 1990s and is near multi-decade lows, not at an all-time high.", "source_name": "FBI Crime Data Explorer", "source_url": "https://cde.ucr.cjis.gov", "search_query": "US violent crime rate trend FBI"}]}
+
+NEW text: "well I just think raising taxes is a terrible idea and it always backfires"
+{"claims_checked": 0, "findings": []}
+
+NEW text: "of course you'd defend him you work for him so your opinion doesn't count"
+{"claims_checked": 0, "findings": [{"type": "fallacy", "fallacy_name": "ad hominem", "quote": "you work for him so your opinion doesn't count", "explanation": "It dismisses the argument by attacking the speaker's circumstances instead of the argument itself."}]}
 
 Respond with JSON only, matching this schema:
-{"findings": [
+{"claims_checked": number, "findings": [
   {"type": "fact_check", "quote": string, "verdict": "false"|"misleading"|"unverifiable", "correction": string, "source_name": string, "source_url": string, "search_query": string},
   {"type": "fallacy", "fallacy_name": string, "quote": string, "explanation": string}
 ]}`;
@@ -37,6 +51,7 @@ function buildUserPrompt(chunk: string, context?: string): string {
 const GEMINI_RESPONSE_SCHEMA = {
   type: "OBJECT",
   properties: {
+    claims_checked: { type: "INTEGER" },
     findings: {
       type: "ARRAY",
       items: {
@@ -59,7 +74,7 @@ const GEMINI_RESPONSE_SCHEMA = {
       },
     },
   },
-  required: ["findings"],
+  required: ["claims_checked", "findings"],
 };
 
 /* Tried in order; a 404 (model renamed/retired) falls through to the next. */
@@ -136,7 +151,9 @@ async function callNvidiaNim(chunk: string, context?: string): Promise<string> {
 }
 
 /** Pull a JSON object out of a model reply that may include prose or fences. */
-function extractJson(text: string): { findings?: unknown } | null {
+function extractJson(
+  text: string
+): { findings?: unknown; claims_checked?: unknown } | null {
   const trimmed = text.trim();
   try {
     return JSON.parse(trimmed);
@@ -245,8 +262,13 @@ export async function POST(req: NextRequest) {
     const parsed = extractJson(raw);
     const findings = sanitizeFindings(parsed?.findings);
     await attachLiveSources(findings);
+    const claimsChecked =
+      typeof parsed?.claims_checked === "number" && parsed.claims_checked >= 0
+        ? Math.round(parsed.claims_checked)
+        : findings.filter((f) => f.type === "fact_check").length;
     return NextResponse.json({
       findings,
+      claims_checked: claimsChecked,
       provider: hasGemini ? "gemini" : "nvidia-nim",
     });
   } catch (err) {

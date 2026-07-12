@@ -29,5 +29,7 @@ export interface AnalyzeRequest {
 
 export interface AnalyzeResponse {
   findings: Finding[];
+  /** Factual claims the model evaluated in this chunk, including accurate ones. */
+  claims_checked?: number;
   provider: string;
 }

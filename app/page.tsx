@@ -54,6 +54,8 @@ export default function Home() {
   const [voice, setVoice] = useState(true);
   const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
+  const [allClear, setAllClear] = useState<string | null>(null);
+  const allClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const transcriptRef = useRef("");
   const analyzedRef = useRef(0);
@@ -219,6 +221,12 @@ export default function Home() {
           })),
         ]);
         interrupt(fresh);
+      } else if ((data.claims_checked ?? 0) > 0) {
+        // Prove the referee is working even when nobody is wrong.
+        const n = data.claims_checked!;
+        setAllClear(`✓ ${n} claim${n === 1 ? "" : "s"} checked — all accurate`);
+        if (allClearTimerRef.current) clearTimeout(allClearTimerRef.current);
+        allClearTimerRef.current = setTimeout(() => setAllClear(null), 8000);
       }
     } catch {
       setApiError("Network error while analyzing. Retrying…");
@@ -376,7 +384,7 @@ export default function Home() {
               ? "Fact-checking…"
               : sessionActive
                 ? listening
-                  ? "Listening"
+                  ? (allClear ?? "Listening")
                   : "Paused"
                 : "Mic off"}
         </div>
