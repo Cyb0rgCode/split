@@ -102,6 +102,10 @@ Open `http://localhost:3000`, allow microphone access, press
   Wall of China is visible from the Moon" or "unemployment is 40 percent".
 - Speech recognition needs Chrome, Edge, or Safari over HTTPS (or localhost),
   with mic permission granted.
+- **Hearing the robotic browser voice instead of the AI voice?** Open
+  `/api/tts` in your browser on the deployed site — it runs a live self-test
+  and reports exactly which TTS provider works and the upstream error for
+  each one that doesn't (spent quota, invalid key, renamed model, …).
 
 ## Notes & limits
 

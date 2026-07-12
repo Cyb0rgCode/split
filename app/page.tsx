@@ -162,7 +162,7 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
-        signal: AbortSignal.timeout(10000), // slow TTS → fall back, don't stall
+        signal: AbortSignal.timeout(15000), // slow TTS → fall back, don't stall
       });
       if (!res.ok) return false;
       const wav = await res.arrayBuffer();
