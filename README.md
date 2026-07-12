@@ -41,7 +41,8 @@ No alerts means the debate is clean. Better debates for both sides.
    resumes after.
    The card also stays woven into the transcript at the point where it
    happened. Toggle **Voice** off for a chime + vibration instead.
-   Customize with `ELEVENLABS_VOICE_ID` (default: Rachel),
+   Customize with `ELEVENLABS_VOICE_ID` (default: George — browse the
+   [voice library](https://elevenlabs.io/app/voice-library)),
    `GEMINI_TTS_VOICE` (default `Kore`), or `GEMINI_TTS_MODEL`.
 
 ## Setup

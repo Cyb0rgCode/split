@@ -37,45 +37,48 @@ interface TtsAttempt {
 }
 
 /** ElevenLabs TTS — free plan: 10,000 credits/month, ~0.5 credit per
-    character on the flash model. Returns MP3 directly. */
+    character on the flash model. Returns MP3 directly. Tries the cheap
+    flash model first, then eleven_v3 for accounts without it. */
 async function elevenLabsTts(
   text: string,
   attempts: TtsAttempt[]
 ): Promise<ArrayBuffer | null> {
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key) return null;
-  const voiceId = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Rachel
-  const modelId = process.env.ELEVENLABS_MODEL || "eleven_flash_v2_5";
-  try {
-    const res = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "xi-api-key": key,
-        },
-        body: JSON.stringify({ text, model_id: modelId }),
-        signal: AbortSignal.timeout(12000),
-      }
-    );
-    if (!res.ok) {
+  const voiceId = process.env.ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb"; // George
+  const models = [
+    ...new Set([process.env.ELEVENLABS_MODEL || "eleven_flash_v2_5", "eleven_v3"]),
+  ];
+  for (const modelId of models) {
+    try {
+      const res = await fetch(
+        `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "xi-api-key": key,
+          },
+          body: JSON.stringify({ text, model_id: modelId }),
+          signal: AbortSignal.timeout(12000),
+        }
+      );
+      if (res.ok) return await res.arrayBuffer();
       attempts.push({
-        provider: "elevenlabs",
+        provider: `elevenlabs:${modelId}`,
         status: res.status,
         error: (await res.text()).slice(0, 300),
       });
-      return null; // fall through to Gemini TTS
+      if (res.status === 401 || res.status === 403) break; // bad key — stop
+    } catch (err) {
+      attempts.push({
+        provider: `elevenlabs:${modelId}`,
+        status: 0,
+        error: String(err).slice(0, 300),
+      });
     }
-    return await res.arrayBuffer();
-  } catch (err) {
-    attempts.push({
-      provider: "elevenlabs",
-      status: 0,
-      error: String(err).slice(0, 300),
-    });
-    return null;
   }
+  return null; // fall through to Gemini TTS
 }
 
 async function geminiTtsModel(
