@@ -103,6 +103,8 @@ export default function Home() {
     elevenlabs: false,
     gemini: false,
   });
+  const [aiProvider, setAiProvider] = useState<"gemini" | "nvidia">("gemini");
+  const [aiAvailable, setAiAvailable] = useState({ gemini: false, nvidia: false });
   const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
   const [viewedFinding, setViewedFinding] = useState<Finding | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
@@ -120,6 +122,7 @@ export default function Home() {
   const nextIdRef = useRef(1);
   const voiceModeRef = useRef<VoiceMode>(voiceMode);
   const voicePickRef = useRef<VoicePick>(voicePick);
+  const aiProviderRef = useRef<"gemini" | "nvidia">(aiProvider);
   const sessionActiveRef = useRef(false);
   const speakQueueRef = useRef<Finding[]>([]);
   const speakingRef = useRef(false);
@@ -129,6 +132,7 @@ export default function Home() {
   interimRef.current = interim;
   voiceModeRef.current = voiceMode;
   voicePickRef.current = voicePick;
+  aiProviderRef.current = aiProvider;
   sessionActiveRef.current = sessionActive;
 
   // Pre-pick an English TTS voice; voices often load async.
@@ -184,9 +188,27 @@ export default function Home() {
           elevenlabs: !!h.tts?.elevenlabs,
           gemini: !!h.tts?.gemini,
         });
+        const avail = {
+          gemini: !!h.providers?.gemini,
+          nvidia: !!h.providers?.nvidia,
+        };
+        setAiAvailable(avail);
+        // Restore last choice, but only if that provider has a key.
+        const saved = localStorage.getItem("split-ai-provider");
+        const wanted = saved === "nvidia" || saved === "gemini" ? saved : "gemini";
+        setAiProvider(
+          avail[wanted] ? wanted : avail.gemini ? "gemini" : "nvidia"
+        );
       })
       .catch(() => setAiConfigured(null));
   }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("split-ai-provider", aiProvider);
+    } catch {
+      /* private mode — not persisted */
+    }
+  }, [aiProvider]);
 
   const chime = useCallback(() => {
     try {
@@ -456,7 +478,7 @@ export default function Home() {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chunk, context }),
+        body: JSON.stringify({ chunk, context, provider: aiProviderRef.current }),
         signal: AbortSignal.timeout(28000),
       });
       if (!res.ok) {
@@ -673,6 +695,20 @@ export default function Home() {
             title="Choose the referee's voice"
           >
             {MODE_LABEL[voiceMode]}
+          </button>
+          <button
+            className="side-btn"
+            disabled={!(aiAvailable.gemini && aiAvailable.nvidia)}
+            onClick={() =>
+              setAiProvider((p) => (p === "gemini" ? "nvidia" : "gemini"))
+            }
+            title={
+              aiAvailable.gemini && aiAvailable.nvidia
+                ? "Switch the fact-checking AI"
+                : "Set both GEMINI_API_KEY and NVIDIA_NIM_API_KEY to switch"
+            }
+          >
+            {aiProvider === "gemini" ? "🧠 Gemini" : "🧠 NVIDIA"}
           </button>
           <button
             className={`mic-btn ${sessionActive ? "listening" : ""}`}

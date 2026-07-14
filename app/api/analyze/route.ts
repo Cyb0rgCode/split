@@ -149,25 +149,39 @@ async function callGemini(chunk: string, context?: string): Promise<string> {
 
 async function callNvidiaNim(chunk: string, context?: string): Promise<string> {
   const key = process.env.NVIDIA_NIM_API_KEY!;
-  const model = process.env.NVIDIA_NIM_MODEL || "meta/llama-3.3-70b-instruct";
-  const res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.1,
-      max_tokens: 1024,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: buildUserPrompt(chunk, context) },
-      ],
-    }),
-  });
+  const model = process.env.NVIDIA_NIM_MODEL || "minimaxai/minimax-m3";
+  let res: Response;
+  try {
+    res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        // Reasoning models (MiniMax M3) burn tokens thinking before the JSON
+        // answer — leave generous room so the answer isn't truncated.
+        max_tokens: 4096,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: buildUserPrompt(chunk, context) },
+        ],
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch (err) {
+    throw Object.assign(
+      new Error(`NVIDIA NIM timed out: ${String(err).slice(0, 120)}`),
+      { status: 503 }
+    );
+  }
   if (!res.ok) {
-    throw new Error(`NVIDIA NIM API error ${res.status}: ${await res.text()}`);
+    throw Object.assign(
+      new Error(`NVIDIA NIM API error ${res.status}: ${await res.text()}`),
+      { status: res.status }
+    );
   }
   const data = await res.json();
   return data?.choices?.[0]?.message?.content ?? "";
@@ -284,8 +298,26 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Honor the provider the user picked in the UI; fall back sensibly.
+  const requested = (body as { provider?: string }).provider;
+  let useGemini = hasGemini;
+  if (requested === "nvidia") {
+    if (!hasNim) {
+      return NextResponse.json(
+        { error: "NVIDIA NIM not configured — set NVIDIA_NIM_API_KEY." },
+        { status: 503 }
+      );
+    }
+    useGemini = false;
+  } else if (requested === "gemini" && !hasGemini) {
+    return NextResponse.json(
+      { error: "Gemini not configured — set GEMINI_API_KEY." },
+      { status: 503 }
+    );
+  }
+
   try {
-    const raw = hasGemini
+    const raw = useGemini
       ? await callGemini(chunk, context)
       : await callNvidiaNim(chunk, context);
     const parsed = extractJson(raw);
@@ -302,7 +334,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       findings,
       claims_checked: claimsChecked,
-      provider: hasGemini ? "gemini" : "nvidia-nim",
+      provider: useGemini ? "gemini" : "nvidia-nim",
     });
   } catch (err) {
     console.error("analyze failed:", err);

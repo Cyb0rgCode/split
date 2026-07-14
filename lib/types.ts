@@ -25,6 +25,8 @@ export interface AnalyzeRequest {
   chunk: string;
   /** Recent transcript before the chunk, for context only. */
   context?: string;
+  /** Which AI checks the claims; omitted = whatever is configured. */
+  provider?: "gemini" | "nvidia";
 }
 
 export interface AnalyzeResponse {

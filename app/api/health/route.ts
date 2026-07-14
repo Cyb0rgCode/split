@@ -14,5 +14,9 @@ export async function GET() {
     elevenlabs: !!process.env.ELEVENLABS_API_KEY,
     gemini: !!process.env.GEMINI_API_KEY,
   };
-  return NextResponse.json({ ai, search, tts });
+  const providers = {
+    gemini: !!process.env.GEMINI_API_KEY,
+    nvidia: !!process.env.NVIDIA_NIM_API_KEY,
+  };
+  return NextResponse.json({ ai, search, tts, providers });
 }

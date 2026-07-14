@@ -219,7 +219,9 @@ a {
 .controls {
   display: flex;
   align-items: center;
-  gap: 22px;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
 }
 
 .mic-btn {
@@ -261,7 +263,12 @@ a {
   background: var(--panel);
   color: var(--muted);
   font-size: 13px;
-  min-width: 88px;
+  min-width: 76px;
+}
+
+.side-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .side-btn.active {
