@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSpeech } from "@/lib/useSpeech";
 import WaveBar from "@/components/WaveBar";
-import type { AnalyzeResponse, Finding } from "@/lib/types";
+import type { AnalyzeResponse, FactCheckFinding, Finding } from "@/lib/types";
 
 interface PlacedFinding {
   id: number;
@@ -80,7 +80,7 @@ export default function Home() {
   const [aiAvailable, setAiAvailable] = useState({ gemini: false, nvidia: false });
   const [webSearch, setWebSearch] = useState(true);
   const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
-  const [viewedFinding, setViewedFinding] = useState<Finding | null>(null);
+  const [viewedId, setViewedId] = useState<number | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
   const [allClear, setAllClear] = useState<string | null>(null);
   const allClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -297,7 +297,7 @@ export default function Home() {
     return new Promise((resolve) => {
       if (!("speechSynthesis" in window)) return resolve();
       const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 1.05;
+      utter.rate = 1.15;
       utter.volume = 1;
       utter.lang = "en-US";
       const pickedName = voicePickRef.current.browser;
@@ -344,10 +344,12 @@ export default function Home() {
       const text = ttsText(next);
       if (calloutClearTimerRef.current) clearTimeout(calloutClearTimerRef.current);
       calloutTextRef.current = text;
-      // grab the room's attention, then a small beat before the callout
-      await playAlert();
-      await new Promise((r) => setTimeout(r, 150));
+      // The alert grabs the room's attention; the voice cuts in over its
+      // tail instead of waiting for it to finish — saves ~2.5s per callout.
+      const alertDone = playAlert();
+      await new Promise((r) => setTimeout(r, 900));
       await speakWithBrowserTts(text);
+      await alertDone.catch(() => {});
       // recognition finals lag behind the audio — keep filtering briefly
       calloutClearTimerRef.current = setTimeout(() => {
         if (!speakingRef.current) calloutTextRef.current = "";
@@ -380,10 +382,43 @@ export default function Home() {
   }, []);
 
   /* ── Analysis loop ──────────────────────────────────────────────────── */
+  /** Swap in a live web-search source once it lands — never blocks the callout. */
+  const enrichSource = useCallback((id: number, f: FactCheckFinding) => {
+    if (!webSearchRef.current) return; // 🔍 toggled off — keep the AI's citation
+    const query = f.search_query || f.correction;
+    fetch("/api/source", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        if (!s?.source_url) return;
+        setFindings((prev) =>
+          prev.map((pf) =>
+            pf.id === id && pf.finding.type === "fact_check"
+              ? {
+                  ...pf,
+                  finding: {
+                    ...pf.finding,
+                    source_name: s.source_name || pf.finding.source_name,
+                    source_url: s.source_url,
+                  },
+                }
+              : pf
+          )
+        );
+      })
+      .catch(() => {});
+  }, []);
+
   const cooldownUntilRef = useRef(0);
-  const analyze = useCallback(async () => {
+  const lastSentAtRef = useRef(0);
+  const analyze = useCallback(async (force = false) => {
     if (inFlightRef.current) return;
     if (Date.now() < cooldownUntilRef.current) return; // backing off a rate limit
+    // Event-driven ticks can fire often — keep request spacing quota-safe.
+    if (!force && Date.now() - lastSentAtRef.current < 4000) return;
     const finalText = transcriptRef.current;
     // Include words still being spoken so continuous talkers get checked
     // without waiting for a pause. Only finalized text advances the analyzed
@@ -403,6 +438,7 @@ export default function Home() {
 
     inFlightRef.current = true;
     lastChunkRef.current = chunk;
+    lastSentAtRef.current = Date.now();
     const sentUpTo = finalText.length;
     setAnalyzing(true);
     try {
@@ -416,7 +452,6 @@ export default function Home() {
           chunk,
           context,
           provider: aiProviderRef.current,
-          search: webSearchRef.current,
         }),
         signal: AbortSignal.timeout(28000),
       });
@@ -451,14 +486,16 @@ export default function Home() {
         allClearTimerRef.current = setTimeout(() => setAllClear(null), 8000);
       };
       if (fresh.length > 0) {
-        setFindings((prev) => [
-          ...prev,
-          ...fresh.map((finding) => ({
-            id: nextIdRef.current++,
-            finding,
-            offset: sentUpTo,
-          })),
-        ]);
+        const placed = fresh.map((finding) => ({
+          id: nextIdRef.current++,
+          finding,
+          offset: sentUpTo,
+        }));
+        setFindings((prev) => [...prev, ...placed]);
+        // Speak first; live sources swap in whenever the search lands.
+        for (const p of placed) {
+          if (p.finding.type === "fact_check") enrichSource(p.id, p.finding);
+        }
         interrupt(fresh);
       } else if (data.findings.length > 0) {
         // Flagged, but identical to a recent callout — don't claim "accurate".
@@ -475,21 +512,29 @@ export default function Home() {
       inFlightRef.current = false;
       setAnalyzing(false);
     }
-  }, [interrupt]);
+  }, [interrupt, enrichSource]);
 
+  // Fallback ticker — catches long unfinalized monologues.
   useEffect(() => {
     if (!sessionActive) return;
-    const timer = setInterval(analyze, ANALYZE_INTERVAL_MS);
+    const timer = setInterval(() => void analyze(), ANALYZE_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [sessionActive, analyze]);
+
+  // Primary trigger: check the moment new speech is finalized instead of
+  // waiting for the next tick (analyze() itself enforces request spacing).
+  useEffect(() => {
+    if (!sessionActive || !transcript) return;
+    void analyze();
+  }, [transcript, sessionActive, analyze]);
 
   /* ── Session controls ───────────────────────────────────────────────── */
   const handleStart = useCallback(() => {
     setApiError(null);
     setSessionActive(true);
     // Unlock audio output on this user gesture (required on iOS): resume the
-    // playback AudioContext for Gemini TTS and speak a silent utterance so
-    // browser speech synthesis is also allowed for later callouts.
+    // playback AudioContext for the alert sound and speak a silent utterance
+    // so browser speech synthesis is also allowed for later callouts.
     type AudioWindow = Window & { webkitAudioContext?: typeof AudioContext };
     const Ctx = window.AudioContext ?? (window as AudioWindow).webkitAudioContext;
     if (Ctx && !audioCtxRef.current) audioCtxRef.current = new Ctx();
@@ -514,7 +559,7 @@ export default function Home() {
     }
     stop();
     pendingSinceRef.current = 0; // force the final short chunk through
-    void analyze();
+    void analyze(true);
   }, [stop, analyze]);
 
   const handleReset = useCallback(() => {
@@ -534,6 +579,11 @@ export default function Home() {
   }, [transcript, interim, findings]);
 
   /* ── Render: transcript with findings woven in at their offsets ─────── */
+  // Looked-up live so background source updates show in the open overlay.
+  const viewedFinding =
+    viewedId === null
+      ? null
+      : (findings.find((pf) => pf.id === viewedId)?.finding ?? null);
   const segments: React.ReactNode[] = [];
   let cursor = 0;
   for (const pf of findings) {
@@ -547,8 +597,8 @@ export default function Home() {
         className={`inline-card v-${f.type === "fallacy" ? "fallacy" : f.verdict}`}
         role="button"
         tabIndex={0}
-        onClick={() => setViewedFinding(f)}
-        onKeyDown={(e) => e.key === "Enter" && setViewedFinding(f)}
+        onClick={() => setViewedId(pf.id)}
+        onKeyDown={(e) => e.key === "Enter" && setViewedId(pf.id)}
       >
         <span className="tag">
           {f.type === "fallacy"
@@ -752,7 +802,7 @@ export default function Home() {
       )}
 
       {viewedFinding && !speakingFinding && (
-        <div className="interrupt-overlay" onClick={() => setViewedFinding(null)}>
+        <div className="interrupt-overlay" onClick={() => setViewedId(null)}>
           <div
             className={`interrupt-card v-${
               viewedFinding.type === "fallacy" ? "fallacy" : viewedFinding.verdict
@@ -787,14 +837,14 @@ export default function Home() {
                 className="side-btn"
                 onClick={() => {
                   const f = viewedFinding;
-                  setViewedFinding(null);
+                  setViewedId(null);
                   speakQueueRef.current.push(f);
                   drainSpeakQueue();
                 }}
               >
                 🔊 Replay
               </button>
-              <button className="side-btn active" onClick={() => setViewedFinding(null)}>
+              <button className="side-btn active" onClick={() => setViewedId(null)}>
                 Close
               </button>
             </div>

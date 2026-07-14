@@ -1,31 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { AnalyzeRequest, Finding } from "@/lib/types";
-import { pickBestResult, searchWeb } from "@/lib/search";
 
 export const maxDuration = 30;
 
-const SYSTEM_PROMPT = `You are "Split", a strictly neutral real-time debate referee listening to a live spoken debate between two people. You receive the newest slice of the transcript (plus earlier context). Speech-to-text output is messy — no punctuation, wrong homophones, filler words — so read through the noise.
+const SYSTEM_PROMPT = `You are "Split", a strictly neutral real-time debate referee. You receive the newest slice of a live spoken debate transcript (plus earlier context). Speech-to-text is messy — no punctuation, wrong homophones, filler — read through the noise.
 
-Work through the NEW text claim by claim:
+Flag two things in the NEW text:
 
-1. FACT CHECKS — evaluate EVERY concrete, checkable factual claim (statistics, numbers, dates, events, laws, science, history, geography) against well-established knowledge.
-   - Flag any claim that is false or significantly misleading. A statistic far from the accepted figure is "false"; a technically-true claim framed to deceive is "misleading". Use "unverifiable" for specific suspicious statistics that cannot be confirmed.
-   - Popular myths count as FALSE even though millions of people repeat them. Canonical examples you must always flag: "the Great Wall of China is visible from space/the Moon", "humans only use 10% of their brains", "goldfish have a 3-second memory", "Einstein failed math", "Napoleon was unusually short", "sugar makes children hyperactive", "lightning never strikes the same place twice", "you lose most of your body heat through your head", "bulls are enraged by the color red", "we swallow spiders in our sleep". Anything of this genre — a widely repeated factoid contradicted by science or history — is a flag.
-   - Do NOT flag: opinions, predictions, moral or value judgments, personal anecdotes, obvious hyperbole ("a million times"), or claims that are approximately correct (reasonable rounding is fine).
-   - "correction" states the correct fact or figure plainly, in one or two sentences.
-   - Cite a real, well-known authoritative source (e.g. WHO, BLS, US Census Bureau, NASA, FBI, peer-reviewed bodies, official statistics agencies) with a plausible canonical URL for that organization. Never invent an organization.
-   - Provide a short "search_query" (3-8 words) that a web search could use to verify the correct figure — the app runs this search to attach a live source.
+1. FACT CHECKS — evaluate EVERY concrete, checkable factual claim (statistics, dates, events, laws, science, history, geography).
+   - verdict "false": contradicts well-established knowledge, or a statistic far from the accepted figure. "misleading": technically true but framed to deceive. "unverifiable": a specific suspicious statistic that cannot be confirmed.
+   - Popular myths are FALSE no matter how many people repeat them, e.g.: Great Wall visible from space/the Moon; humans use 10% of their brains; goldfish 3-second memory; Einstein failed math; Napoleon unusually short; sugar makes children hyperactive; lightning never strikes twice; most body heat lost through the head; bulls enraged by red; swallowing spiders in sleep. Anything of this genre is a flag.
+   - Do NOT flag: opinions, predictions, value judgments, anecdotes, obvious hyperbole, or approximately-correct claims (rounding is fine).
+   - "correction": the correct fact, one or two sentences. "source_name"/"source_url": a real, well-known authoritative organization (WHO, BLS, NASA, FBI, ...) and its canonical URL — never invented. "search_query": 3-8 words to verify the correction via web search.
 
-2. FALLACIES — a clear logical fallacy or personal attack, e.g. ad hominem, straw man, false dilemma, slippery slope, whataboutism, appeal to fear, hasty generalization, red herring, circular reasoning, appeal to authority, tu quoque.
-   - Only flag clear-cut cases. Passionate disagreement is not a fallacy.
-   - Name the fallacy and explain in one short sentence why the quoted statement commits it.
+2. FALLACIES — only clear-cut cases: ad hominem, straw man, false dilemma, slippery slope, whataboutism, appeal to fear, hasty generalization, red herring, circular reasoning, appeal to authority, tu quoque. Name it and explain in one short sentence. Passionate disagreement is not a fallacy.
 
-Calibration: do not invent problems — a clean slice of argument produces zero findings. Only flag what appears in the NEW text, but if the NEW text repeats a false claim that was already made earlier in the context, flag it again anyway. And do not be timid: a wrong claim stated with confidence is exactly what you exist to catch, and letting it slide defeats your purpose. When you are sure a claim is wrong, flag it. Quotes must be short verbatim excerpts from the NEW text.
+Method — think first. Fill the JSON fields in this exact order:
+1. "analysis": scratchpad, never shown to the debaters. One terse sentence per factual claim in the NEW text ending in TRUE, FALSE, MISLEADING, or OPINION with the reason; note any fallacy too.
+2. "claims_checked": how many claims the analysis covered, including TRUE ones.
+3. "findings": an entry for EVERY claim marked FALSE or MISLEADING, plus each fallacy. A FALSE in the analysis with no matching finding is a contradiction and always wrong.
 
-Method — think before you answer. Fill the JSON fields in this exact order:
-1. "analysis": your scratchpad. Go claim by claim through the NEW text; for each factual claim write one terse sentence ending in a verdict word: TRUE, FALSE, MISLEADING, or OPINION, with the reason. Note any fallacy here too. Be brutally honest — this field is never shown to the debaters.
-2. "claims_checked": how many factual claims your analysis covered, including the TRUE ones.
-3. "findings": one entry for EVERY claim your analysis marked FALSE or MISLEADING, plus each clear fallacy. If your analysis says FALSE, that claim MUST appear in findings — a FALSE in the analysis with an empty findings list is a contradiction and always wrong.
+Calibration: a clean slice produces zero findings — do not invent problems. Only flag the NEW text, but re-flag a false claim if the NEW text repeats it. Do not be timid: confidently wrong claims are exactly what you exist to catch. Quotes are short verbatim excerpts from the NEW text.
 
 Examples:
 
@@ -246,29 +241,6 @@ function sanitizeFindings(raw: unknown): Finding[] {
   return findings.slice(0, 6);
 }
 
-/**
- * Replace each fact-check's model-remembered source with a live web search
- * result. Best-effort: on search failure the model's citation is kept, and
- * the internal search_query is dropped from the response either way.
- */
-async function attachLiveSources(findings: Finding[]): Promise<void> {
-  const enrich = Promise.all(
-    findings.map(async (f) => {
-      if (f.type !== "fact_check") return;
-      const query = f.search_query || f.correction;
-      delete f.search_query;
-      const results = await searchWeb(query.slice(0, 200));
-      if (!results) return;
-      const best = pickBestResult(results);
-      f.source_name = best.title.slice(0, 120);
-      f.source_url = best.url;
-    })
-  );
-  // Never let a slow search delay the callout — after 5s ship the model's
-  // own citation instead.
-  await Promise.race([enrich, new Promise((r) => setTimeout(r, 5000))]);
-}
-
 export async function POST(req: NextRequest) {
   let body: AnalyzeRequest;
   try {
@@ -326,15 +298,8 @@ export async function POST(req: NextRequest) {
     if (typeof (parsed as { analysis?: unknown })?.analysis === "string") {
       console.log("analysis:", (parsed as { analysis: string }).analysis.slice(0, 500));
     }
-    if (body.search !== false) {
-      await attachLiveSources(findings);
-    } else {
-      // Search disabled in the UI — keep the model's citation, just drop
-      // the internal search_query field.
-      for (const f of findings) {
-        if (f.type === "fact_check") delete f.search_query;
-      }
-    }
+    // Live source search happens client-side in the background (/api/source)
+    // so it never delays the callout — search_query stays in the response.
     const claimsChecked =
       typeof parsed?.claims_checked === "number" && parsed.claims_checked >= 0
         ? Math.round(parsed.claims_checked)

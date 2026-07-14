@@ -27,8 +27,6 @@ export interface AnalyzeRequest {
   context?: string;
   /** Which AI checks the claims; omitted = whatever is configured. */
   provider?: "gemini" | "nvidia";
-  /** Attach live web-search sources to fact checks (default true). */
-  search?: boolean;
 }
 
 export interface AnalyzeResponse {
