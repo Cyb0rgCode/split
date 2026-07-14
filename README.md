@@ -27,7 +27,8 @@ No alerts means the debate is clean. Better debates for both sides.
    structured JSON.
 4. Each flagged claim is then run through a **live web search** (Tavily or
    the keyless Wikipedia API) so the cited source is a real, current
-   result — not the model's memory.
+   result — not the model's memory. The **🔍 button** toggles this: off
+   means faster callouts with the AI's own citation instead.
 5. New findings interrupt the debate mid-conversation: a sharp buzzer cuts
    through the talking, then the referee **calls the lie out loud** —
    "Stop right there, that's a lie! Here's the truth: …" — followed by the

@@ -78,6 +78,7 @@ export default function Home() {
   const [browserVoices, setBrowserVoices] = useState<string[]>([]);
   const [aiProvider, setAiProvider] = useState<"gemini" | "nvidia">("gemini");
   const [aiAvailable, setAiAvailable] = useState({ gemini: false, nvidia: false });
+  const [webSearch, setWebSearch] = useState(true);
   const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
   const [viewedFinding, setViewedFinding] = useState<Finding | null>(null);
   const [aiConfigured, setAiConfigured] = useState<boolean | null>(null);
@@ -96,6 +97,7 @@ export default function Home() {
   const voiceModeRef = useRef<VoiceMode>(voiceMode);
   const voicePickRef = useRef<VoicePick>(voicePick);
   const aiProviderRef = useRef<"gemini" | "nvidia">(aiProvider);
+  const webSearchRef = useRef(webSearch);
   const sessionActiveRef = useRef(false);
   const speakQueueRef = useRef<Finding[]>([]);
   const speakingRef = useRef(false);
@@ -106,6 +108,7 @@ export default function Home() {
   voiceModeRef.current = voiceMode;
   voicePickRef.current = voicePick;
   aiProviderRef.current = aiProvider;
+  webSearchRef.current = webSearch;
   sessionActiveRef.current = sessionActive;
 
   // Pre-pick an English TTS voice; voices often load async.
@@ -181,6 +184,16 @@ export default function Home() {
       /* private mode — not persisted */
     }
   }, [aiProvider]);
+  useEffect(() => {
+    setWebSearch(localStorage.getItem("split-web-search") !== "off");
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("split-web-search", webSearch ? "on" : "off");
+    } catch {
+      /* private mode — not persisted */
+    }
+  }, [webSearch]);
 
   const chime = useCallback(() => {
     try {
@@ -399,7 +412,12 @@ export default function Home() {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chunk, context, provider: aiProviderRef.current }),
+        body: JSON.stringify({
+          chunk,
+          context,
+          provider: aiProviderRef.current,
+          search: webSearchRef.current,
+        }),
         signal: AbortSignal.timeout(28000),
       });
       if (!res.ok) {
@@ -637,6 +655,17 @@ export default function Home() {
             {sessionActive ? "■" : "🎙"}
           </button>
           <div className="controls-side right">
+            <button
+              className={`side-btn ${webSearch ? "active" : ""}`}
+              onClick={() => setWebSearch((s) => !s)}
+              title={
+                webSearch
+                  ? "Web search on — sources come from a live search"
+                  : "Web search off — sources come from the AI's memory (faster)"
+              }
+            >
+              🔍
+            </button>
             <button className="side-btn" onClick={handleReset} title="Clear session">
               ✕
             </button>

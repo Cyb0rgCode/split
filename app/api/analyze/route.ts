@@ -326,7 +326,15 @@ export async function POST(req: NextRequest) {
     if (typeof (parsed as { analysis?: unknown })?.analysis === "string") {
       console.log("analysis:", (parsed as { analysis: string }).analysis.slice(0, 500));
     }
-    await attachLiveSources(findings);
+    if (body.search !== false) {
+      await attachLiveSources(findings);
+    } else {
+      // Search disabled in the UI — keep the model's citation, just drop
+      // the internal search_query field.
+      for (const f of findings) {
+        if (f.type === "fact_check") delete f.search_query;
+      }
+    }
     const claimsChecked =
       typeof parsed?.claims_checked === "number" && parsed.claims_checked >= 0
         ? Math.round(parsed.claims_checked)
