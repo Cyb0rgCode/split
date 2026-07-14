@@ -44,30 +44,11 @@ function ttsText(f: Finding): string {
   return `${lead} ${f.correction}${source}`;
 }
 
-type VoiceMode = "off" | "browser" | "elevenlabs" | "gemini";
+type VoiceMode = "off" | "browser";
 
 interface VoicePick {
   browser: string; // voice name, "" = auto
-  elevenlabs: string; // voice id
-  gemini: string; // prebuilt voice name
 }
-
-const ELEVENLABS_VOICES: Array<{ id: string; name: string }> = [
-  { id: "JBFqnCBsd6RMkjVDRZzb", name: "George" },
-  { id: "9BWtsMINqrJLrRacOk9x", name: "Aria" },
-  { id: "EXAVITQu4vr4xnSDxMaL", name: "Sarah" },
-  { id: "IKne3meq5aSn9XLyUdCD", name: "Charlie" },
-  { id: "nPczCjzI2devNBz1zQrb", name: "Brian" },
-];
-
-const GEMINI_VOICES = ["Kore", "Puck", "Charon", "Fenrir", "Aoede", "Zephyr"];
-
-const MODE_LABEL: Record<VoiceMode, string> = {
-  off: "🔇 Off",
-  browser: "🔊 Browser",
-  elevenlabs: "🔊 11Labs",
-  gemini: "🔊 Gemini",
-};
 
 export default function Home() {
   /* What the referee is currently saying out loud. Recognition keeps running
@@ -92,17 +73,9 @@ export default function Home() {
   const [analyzing, setAnalyzing] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [voiceMode, setVoiceMode] = useState<VoiceMode>("browser");
-  const [voicePick, setVoicePick] = useState<VoicePick>({
-    browser: "",
-    elevenlabs: ELEVENLABS_VOICES[0].id,
-    gemini: GEMINI_VOICES[0],
-  });
+  const [voicePick, setVoicePick] = useState<VoicePick>({ browser: "" });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [browserVoices, setBrowserVoices] = useState<string[]>([]);
-  const [ttsAvailable, setTtsAvailable] = useState({
-    elevenlabs: false,
-    gemini: false,
-  });
   const [aiProvider, setAiProvider] = useState<"gemini" | "nvidia">("gemini");
   const [aiAvailable, setAiAvailable] = useState({ gemini: false, nvidia: false });
   const [speakingFinding, setSpeakingFinding] = useState<Finding | null>(null);
@@ -161,8 +134,11 @@ export default function Home() {
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("split-voice") ?? "null");
-      if (saved?.mode) setVoiceMode(saved.mode as VoiceMode);
-      if (saved?.pick) setVoicePick((p) => ({ ...p, ...saved.pick }));
+      // older versions stored AI voice modes — anything not "off" is voiced
+      if (saved?.mode) setVoiceMode(saved.mode === "off" ? "off" : "browser");
+      if (typeof saved?.pick?.browser === "string") {
+        setVoicePick({ browser: saved.pick.browser });
+      }
     } catch {
       /* corrupted storage — keep defaults */
     }
@@ -184,10 +160,6 @@ export default function Home() {
       .then((r) => r.json())
       .then((h) => {
         setAiConfigured(!!h.ai);
-        setTtsAvailable({
-          elevenlabs: !!h.tts?.elevenlabs,
-          gemini: !!h.tts?.gemini,
-        });
         const avail = {
           gemini: !!h.providers?.gemini,
           nvidia: !!h.providers?.nvidia,
@@ -305,51 +277,8 @@ export default function Home() {
     await new Promise((r) => setTimeout(r, 450));
   }, [buzzer]);
 
-  /* ── Spoken interruptions ─────────────────────────────────────────────
-     Gemini TTS first (natural voice), browser speech synthesis as the
-     fallback when the TTS quota is spent or the request fails. While the
-     referee talks, speech recognition is paused so the app doesn't
-     transcribe (and fact-check) its own voice. */
+  /* ── Spoken interruptions — browser speech synthesis ────────────────── */
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const ttsSourceRef = useRef<AudioBufferSourceNode | null>(null);
-
-  const playRemoteTts = useCallback(async (text: string): Promise<boolean> => {
-    try {
-      const mode = voiceModeRef.current;
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          provider: mode,
-          voice:
-            mode === "elevenlabs"
-              ? voicePickRef.current.elevenlabs
-              : voicePickRef.current.gemini,
-        }),
-        signal: AbortSignal.timeout(15000), // slow TTS → fall back, don't stall
-      });
-      if (!res.ok) return false;
-      const wav = await res.arrayBuffer();
-      const ctx = audioCtxRef.current;
-      if (!ctx) return false;
-      if (ctx.state === "suspended") await ctx.resume();
-      const buffer = await ctx.decodeAudioData(wav);
-      return await new Promise<boolean>((resolve) => {
-        const src = ctx.createBufferSource();
-        src.buffer = buffer;
-        src.connect(ctx.destination);
-        ttsSourceRef.current = src;
-        src.onended = () => {
-          ttsSourceRef.current = null;
-          resolve(true);
-        };
-        src.start();
-      });
-    } catch {
-      return false;
-    }
-  }, []);
 
   const speakWithBrowserTts = useCallback((text: string): Promise<void> => {
     return new Promise((resolve) => {
@@ -405,10 +334,7 @@ export default function Home() {
       // grab the room's attention, then a small beat before the callout
       await playAlert();
       await new Promise((r) => setTimeout(r, 150));
-      const mode = voiceModeRef.current;
-      // AI providers fall back to the browser voice; browser mode goes direct.
-      const spoken = mode === "browser" ? false : await playRemoteTts(text);
-      if (!spoken) await speakWithBrowserTts(text);
+      await speakWithBrowserTts(text);
       // recognition finals lag behind the audio — keep filtering briefly
       calloutClearTimerRef.current = setTimeout(() => {
         if (!speakingRef.current) calloutTextRef.current = "";
@@ -417,7 +343,7 @@ export default function Home() {
       setSpeakingFinding(null);
       drainSpeakQueue();
     })();
-  }, [playAlert, playRemoteTts, speakWithBrowserTts]);
+  }, [playAlert, speakWithBrowserTts]);
 
   const interrupt = useCallback(
     (fresh: Finding[]) => {
@@ -433,11 +359,6 @@ export default function Home() {
 
   const skipSpeaking = useCallback(() => {
     window.speechSynthesis?.cancel(); // fires onend/onerror → queue drains
-    try {
-      ttsSourceRef.current?.stop(); // fires onended → queue drains
-    } catch {
-      /* already stopped */
-    }
     try {
       alertSourceRef.current?.stop();
     } catch {
@@ -569,11 +490,6 @@ export default function Home() {
     speakQueueRef.current = [];
     window.speechSynthesis?.cancel();
     try {
-      ttsSourceRef.current?.stop();
-    } catch {
-      /* already stopped */
-    }
-    try {
       alertSourceRef.current?.stop();
     } catch {
       /* already stopped */
@@ -689,27 +605,29 @@ export default function Home() {
       <div className="dock">
         <WaveBar active={sessionActive} />
         <div className="controls">
-          <button
-            className={`side-btn ${voiceMode !== "off" ? "active" : ""}`}
-            onClick={() => setPickerOpen(true)}
-            title="Choose the referee's voice"
-          >
-            {MODE_LABEL[voiceMode]}
-          </button>
-          <button
-            className="side-btn"
-            disabled={!(aiAvailable.gemini && aiAvailable.nvidia)}
-            onClick={() =>
-              setAiProvider((p) => (p === "gemini" ? "nvidia" : "gemini"))
-            }
-            title={
-              aiAvailable.gemini && aiAvailable.nvidia
-                ? "Switch the fact-checking AI"
-                : "Set both GEMINI_API_KEY and NVIDIA_NIM_API_KEY to switch"
-            }
-          >
-            {aiProvider === "gemini" ? "🧠 Gemini" : "🧠 NVIDIA"}
-          </button>
+          <div className="controls-side left">
+            <button
+              className={`side-btn ${voiceMode !== "off" ? "active" : ""}`}
+              onClick={() => setPickerOpen(true)}
+              title="Choose the referee's voice"
+            >
+              {voiceMode === "off" ? "🔇" : "🔊"}
+            </button>
+            <button
+              className="side-btn"
+              disabled={!(aiAvailable.gemini && aiAvailable.nvidia)}
+              onClick={() =>
+                setAiProvider((p) => (p === "gemini" ? "nvidia" : "gemini"))
+              }
+              title={
+                aiAvailable.gemini && aiAvailable.nvidia
+                  ? "Switch the fact-checking AI"
+                  : "Set both GEMINI_API_KEY and NVIDIA_NIM_API_KEY to switch"
+              }
+            >
+              🧠 {aiProvider === "gemini" ? "Gemini" : "NVIDIA"}
+            </button>
+          </div>
           <button
             className={`mic-btn ${sessionActive ? "listening" : ""}`}
             onClick={sessionActive ? handleStop : handleStart}
@@ -718,9 +636,11 @@ export default function Home() {
           >
             {sessionActive ? "■" : "🎙"}
           </button>
-          <button className="side-btn" onClick={handleReset} title="Clear session">
-            ✕ Clear
-          </button>
+          <div className="controls-side right">
+            <button className="side-btn" onClick={handleReset} title="Clear session">
+              ✕
+            </button>
+          </div>
         </div>
         <div className={`status ${analyzing ? "thinking" : ""}`}>
           {speakingFinding
@@ -769,80 +689,6 @@ export default function Home() {
               </select>
             )}
 
-            <label
-              className={`picker-row ${voiceMode === "elevenlabs" ? "selected" : ""} ${
-                ttsAvailable.elevenlabs ? "" : "disabled"
-              }`}
-            >
-              <input
-                type="radio"
-                name="voice-mode"
-                disabled={!ttsAvailable.elevenlabs}
-                checked={voiceMode === "elevenlabs"}
-                onChange={() => setVoiceMode("elevenlabs")}
-              />
-              <span className="row-main">
-                <span className="row-title">ElevenLabs</span>
-                <span className="row-sub">
-                  {ttsAvailable.elevenlabs
-                    ? "Most natural — ~80 callouts/month free"
-                    : "Add ELEVENLABS_API_KEY to enable"}
-                </span>
-              </span>
-            </label>
-            {voiceMode === "elevenlabs" && (
-              <select
-                className="picker-select"
-                value={voicePick.elevenlabs}
-                onChange={(e) =>
-                  setVoicePick((p) => ({ ...p, elevenlabs: e.target.value }))
-                }
-              >
-                {ELEVENLABS_VOICES.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            <label
-              className={`picker-row ${voiceMode === "gemini" ? "selected" : ""} ${
-                ttsAvailable.gemini ? "" : "disabled"
-              }`}
-            >
-              <input
-                type="radio"
-                name="voice-mode"
-                disabled={!ttsAvailable.gemini}
-                checked={voiceMode === "gemini"}
-                onChange={() => setVoiceMode("gemini")}
-              />
-              <span className="row-main">
-                <span className="row-title">Gemini TTS</span>
-                <span className="row-sub">
-                  {ttsAvailable.gemini
-                    ? "Natural — ~10 callouts/day per model, free"
-                    : "Add GEMINI_API_KEY to enable"}
-                </span>
-              </span>
-            </label>
-            {voiceMode === "gemini" && (
-              <select
-                className="picker-select"
-                value={voicePick.gemini}
-                onChange={(e) =>
-                  setVoicePick((p) => ({ ...p, gemini: e.target.value }))
-                }
-              >
-                {GEMINI_VOICES.map((v) => (
-                  <option key={v} value={v}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            )}
-
             <label className={`picker-row ${voiceMode === "off" ? "selected" : ""}`}>
               <input
                 type="radio"
@@ -861,19 +707,9 @@ export default function Home() {
                 className="side-btn"
                 disabled={voiceMode === "off" || speakingRef.current}
                 onClick={() => {
-                  void (async () => {
-                    const sample = "Fact check. This is your debate referee speaking.";
-                    type AudioWindow = Window & {
-                      webkitAudioContext?: typeof AudioContext;
-                    };
-                    const Ctx =
-                      window.AudioContext ?? (window as AudioWindow).webkitAudioContext;
-                    if (Ctx && !audioCtxRef.current) audioCtxRef.current = new Ctx();
-                    void audioCtxRef.current?.resume().catch(() => {});
-                    const ok =
-                      voiceMode === "browser" ? false : await playRemoteTts(sample);
-                    if (!ok) await speakWithBrowserTts(sample);
-                  })();
+                  void speakWithBrowserTts(
+                    "Fact check. This is your debate referee speaking."
+                  );
                 }}
               >
                 ▶ Test voice

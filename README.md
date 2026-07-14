@@ -31,27 +31,13 @@ No alerts means the debate is clean. Better debates for both sides.
 5. New findings interrupt the debate mid-conversation: a sharp buzzer cuts
    through the talking, then the referee **calls the lie out loud** —
    "Stop right there, that's a lie! Here's the truth: …" — followed by the
-   correction and source, shown full-screen while it speaks. The **Voice
-   button opens a picker** for the provider and the specific voice, all free:
-   - **Browser voice** (default) — instant, on-device, pick any installed
-     English voice
-   - **ElevenLabs** — most natural; needs `ELEVENLABS_API_KEY` (free plan:
-     10,000 credits/month ≈ 80 callouts;
-     [elevenlabs.io/app/developers](https://elevenlabs.io/app/developers));
-     George, Aria, Sarah, Charlie, or Brian
-   - **Gemini TTS** — natural; uses your existing `GEMINI_API_KEY` (≈10
-     callouts/day per model, and the app stacks the model quotas); Kore,
-     Puck, Charon, Fenrir, Aoede, or Zephyr
-   - **Off** — chime + vibration only
-
-   AI voices fall back to the browser voice automatically on quota/errors,
-   there's a ▶ Test button in the picker, and the choice is remembered on
-   the device. Listening pauses during the callout and resumes after.
-   The card also stays woven into the transcript at the point where it
-   happened. Toggle **Voice** off for a chime + vibration instead.
-   Customize with `ELEVENLABS_VOICE_ID` (default: George — browse the
-   [voice library](https://elevenlabs.io/app/voice-library)),
-   `GEMINI_TTS_VOICE` (default `Kore`), or `GEMINI_TTS_MODEL`.
+   correction and source, shown full-screen while it speaks. The voice is
+   the browser's built-in speech synthesis — free, instant, on-device. The
+   **🔊 button opens a picker** to choose any installed English voice (with
+   a ▶ Test button) or switch to **Off** (chime + vibration only); the
+   choice is remembered on the device. Listening continues through the
+   callout, with the referee's own words scrubbed from the transcript, and
+   the card stays woven into the transcript at the point where it happened.
 
 ## Setup
 
@@ -122,10 +108,6 @@ Open `http://localhost:3000`, allow microphone access, press
   free tier is only ~20 requests/day, so it suits demos over daily use.
 - Speech recognition needs Chrome, Edge, or Safari over HTTPS (or localhost),
   with mic permission granted.
-- **Hearing the robotic browser voice instead of the AI voice?** Open
-  `/api/tts` in your browser on the deployed site — it runs a live self-test
-  and reports exactly which TTS provider works and the upstream error for
-  each one that doesn't (spent quota, invalid key, renamed model, …).
 
 ## Notes & limits
 
