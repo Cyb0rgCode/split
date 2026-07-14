@@ -227,8 +227,36 @@ a {
 
 .controls-side {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
+}
+
+/* icon-only circles in the control bar (labelled buttons elsewhere keep
+   the default .side-btn look) */
+.controls .side-btn {
+  width: 42px;
+  height: 42px;
+  min-width: 0;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  position: relative;
+}
+
+.btn-badge {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
 }
 
 .controls-side.left {
@@ -240,10 +268,10 @@ a {
 }
 
 .mic-btn {
-  width: 68px;
-  height: 68px;
+  width: 62px;
+  height: 62px;
   border-radius: 50%;
-  font-size: 26px;
+  font-size: 24px;
   background: var(--accent);
   color: #fff;
   display: flex;

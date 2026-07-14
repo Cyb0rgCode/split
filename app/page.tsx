@@ -693,7 +693,10 @@ export default function Home() {
                   : "Set both GEMINI_API_KEY and NVIDIA_NIM_API_KEY to switch"
               }
             >
-              🧠 {aiProvider === "gemini" ? "Gemini" : "NVIDIA"}
+              🧠
+              <span className="btn-badge">
+                {aiProvider === "gemini" ? "G" : "N"}
+              </span>
             </button>
           </div>
           <button
