@@ -87,15 +87,26 @@ const GEMINI_MODELS = [
   "gemini-2.0-flash",
 ];
 
-async function callGemini(chunk: string, context?: string): Promise<string> {
+interface ModelReply {
+  text: string;
+  model: string;
+}
+
+async function callGemini(
+  chunk: string,
+  context?: string,
+  extra?: string
+): Promise<ModelReply> {
   const key = process.env.GEMINI_API_KEY!;
-  const models = process.env.GEMINI_MODEL
+  const all = process.env.GEMINI_MODEL
     ? [process.env.GEMINI_MODEL, ...GEMINI_MODELS]
     : GEMINI_MODELS;
+  // Rescue calls get one quick attempt so two rounds fit in the function limit.
+  const models = extra ? all.slice(0, 1) : all;
 
   let lastError = "";
   let lastStatus = 502;
-  const deadline = Date.now() + 18000; // stay well under the platform timeout
+  const deadline = Date.now() + (extra ? 10000 : 18000);
   for (const model of models) {
     const budget = deadline - Date.now();
     if (budget < 2000) break;
@@ -112,7 +123,16 @@ async function callGemini(chunk: string, context?: string): Promise<string> {
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
             contents: [
-              { role: "user", parts: [{ text: buildUserPrompt(chunk, context) }] },
+              {
+                role: "user",
+                parts: [
+                  {
+                    text:
+                      buildUserPrompt(chunk, context) +
+                      (extra ? `\n\nIMPORTANT: ${extra}` : ""),
+                  },
+                ],
+              },
             ],
             generationConfig: {
               temperature: 0.1,
@@ -131,7 +151,10 @@ async function callGemini(chunk: string, context?: string): Promise<string> {
     }
     if (res.ok) {
       const data = await res.json();
-      return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      return {
+        text: data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "",
+        model,
+      };
     }
     lastStatus = res.status;
     lastError = `Gemini API error ${res.status} on ${model}: ${await res.text()}`;
@@ -142,7 +165,11 @@ async function callGemini(chunk: string, context?: string): Promise<string> {
   throw Object.assign(new Error(lastError), { status: lastStatus });
 }
 
-async function callNvidiaNim(chunk: string, context?: string): Promise<string> {
+async function callNvidiaNim(
+  chunk: string,
+  context?: string,
+  extra?: string
+): Promise<ModelReply> {
   const key = process.env.NVIDIA_NIM_API_KEY!;
   const model = process.env.NVIDIA_NIM_MODEL || "minimaxai/minimax-m3";
   let res: Response;
@@ -161,7 +188,12 @@ async function callNvidiaNim(chunk: string, context?: string): Promise<string> {
         max_tokens: 4096,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: buildUserPrompt(chunk, context) },
+          {
+            role: "user",
+            content:
+              buildUserPrompt(chunk, context) +
+              (extra ? `\n\nIMPORTANT: ${extra}` : ""),
+          },
         ],
       }),
       signal: AbortSignal.timeout(20000),
@@ -179,13 +211,13 @@ async function callNvidiaNim(chunk: string, context?: string): Promise<string> {
     );
   }
   const data = await res.json();
-  return data?.choices?.[0]?.message?.content ?? "";
+  return { text: data?.choices?.[0]?.message?.content ?? "", model };
 }
 
 /** Pull a JSON object out of a model reply that may include prose or fences. */
 function extractJson(
   text: string
-): { findings?: unknown; claims_checked?: unknown } | null {
+): { findings?: unknown; claims_checked?: unknown; analysis?: unknown } | null {
   const trimmed = text.trim();
   try {
     return JSON.parse(trimmed);
@@ -214,12 +246,20 @@ function sanitizeFindings(raw: unknown): Finding[] {
       const verdict =
         typeof f.verdict === "string" ? f.verdict.toLowerCase().trim() : "";
       if (verdict !== "false" && verdict !== "misleading" && verdict !== "unverifiable") continue;
-      if (typeof f.correction !== "string" || !f.correction.trim()) continue;
+      // Lazy responses sometimes put the substance in "explanation" — don't
+      // silently drop a real finding over a missing field name.
+      const correction =
+        typeof f.correction === "string" && f.correction.trim()
+          ? f.correction.trim()
+          : typeof f.explanation === "string"
+            ? f.explanation.trim()
+            : "";
+      if (!correction) continue;
       findings.push({
         type: "fact_check",
         quote,
         verdict,
-        correction: f.correction.trim(),
+        correction,
         source_name: typeof f.source_name === "string" ? f.source_name.trim() : "",
         source_url:
           typeof f.source_url === "string" && /^https?:\/\//.test(f.source_url.trim())
@@ -289,25 +329,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const raw = useGemini
-      ? await callGemini(chunk, context)
-      : await callNvidiaNim(chunk, context);
-    const parsed = extractJson(raw);
-    const findings = sanitizeFindings(parsed?.findings);
-    // Visible in Vercel function logs — the model's claim-by-claim reasoning.
-    if (typeof (parsed as { analysis?: unknown })?.analysis === "string") {
-      console.log("analysis:", (parsed as { analysis: string }).analysis.slice(0, 500));
-    }
-    // Live source search happens client-side in the background (/api/source)
-    // so it never delays the callout — search_query stays in the response.
-    const claimsChecked =
-      typeof parsed?.claims_checked === "number" && parsed.claims_checked >= 0
-        ? Math.round(parsed.claims_checked)
-        : findings.filter((f) => f.type === "fact_check").length;
+    const result = await runAnalysis(useGemini, chunk, context);
     return NextResponse.json({
-      findings,
-      claims_checked: claimsChecked,
+      findings: result.findings,
+      claims_checked: result.claimsChecked,
       provider: useGemini ? "gemini" : "nvidia-nim",
+      model: result.model,
     });
   } catch (err) {
     console.error("analyze failed:", err);
@@ -318,6 +345,97 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: `Analysis failed. ${detail}`.trim() },
       { status }
+    );
+  }
+}
+
+interface AnalysisResult {
+  findings: Finding[];
+  claimsChecked: number;
+  analysis: string;
+  model: string;
+  rescued: boolean;
+}
+
+async function runAnalysis(
+  useGemini: boolean,
+  chunk: string,
+  context?: string
+): Promise<AnalysisResult> {
+  const first = useGemini
+    ? await callGemini(chunk, context)
+    : await callNvidiaNim(chunk, context);
+  let parsed = extractJson(first.text);
+  let findings = sanitizeFindings(parsed?.findings);
+  const analysis =
+    typeof parsed?.analysis === "string" ? parsed.analysis.slice(0, 800) : "";
+  // Visible in Vercel function logs — the model's claim-by-claim reasoning.
+  if (analysis) console.log(`analysis (${first.model}):`, analysis.slice(0, 500));
+
+  // Contradiction rescue: the scratchpad says FALSE/MISLEADING but findings
+  // came back empty — the exact lazy-model failure that shows the debaters a
+  // wrong "all accurate". One follow-up call forces the conversion.
+  let rescued = false;
+  if (findings.length === 0 && /\b(FALSE|MISLEADING)\b/.test(analysis)) {
+    console.warn("contradiction: analysis flagged claims but findings empty — rescuing");
+    try {
+      const extra = `Your previous analysis of this exact text was: "${analysis}". It marked at least one claim FALSE or MISLEADING, yet you returned zero findings — a contradiction. Respond again with the same JSON schema, converting EVERY claim that analysis marked FALSE or MISLEADING into a findings entry with verdict, correction, source_name, source_url and search_query.`;
+      const second = useGemini
+        ? await callGemini(chunk, context, extra)
+        : await callNvidiaNim(chunk, context, extra);
+      const parsed2 = extractJson(second.text);
+      const findings2 = sanitizeFindings(parsed2?.findings);
+      if (findings2.length > 0) {
+        findings = findings2;
+        parsed = parsed2 ?? parsed;
+        rescued = true;
+      }
+    } catch (err) {
+      console.error("rescue pass failed:", err); // keep the first result
+    }
+  }
+
+  const claimsChecked =
+    typeof parsed?.claims_checked === "number" && parsed.claims_checked >= 0
+      ? Math.round(parsed.claims_checked)
+      : findings.filter((f) => f.type === "fact_check").length;
+  return { findings, claimsChecked, analysis, model: first.model, rescued };
+}
+
+/**
+ * Self-test: open /api/analyze in a browser. Runs a blatantly false claim
+ * through the full pipeline and reports the model used, its claim-by-claim
+ * analysis, and whether the claim was flagged. Uses 1-2 quota requests.
+ */
+export async function GET() {
+  const chunk = "The sun revolves around the Earth, everyone knows that.";
+  const hasGemini = !!process.env.GEMINI_API_KEY;
+  const hasNim = !!process.env.NVIDIA_NIM_API_KEY;
+  if (!hasGemini && !hasNim) {
+    return NextResponse.json(
+      { error: "No AI provider configured — set GEMINI_API_KEY." },
+      { status: 503 }
+    );
+  }
+  try {
+    const result = await runAnalysis(hasGemini, chunk);
+    return NextResponse.json({
+      verdict:
+        result.findings.length > 0
+          ? "PASS — the false claim was flagged"
+          : "FAIL — the false claim was NOT flagged (share this JSON when reporting)",
+      test_input: chunk,
+      model: result.model,
+      provider: hasGemini ? "gemini" : "nvidia-nim",
+      rescued: result.rescued,
+      claims_checked: result.claimsChecked,
+      findings: result.findings,
+      analysis: result.analysis,
+    });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message.slice(0, 400) : "failed" },
+      { status: 502 }
     );
   }
 }
