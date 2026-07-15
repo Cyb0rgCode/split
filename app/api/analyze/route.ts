@@ -1,82 +1,92 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { AnalyzeRequest, Finding } from "@/lib/types";
+import type { AnalyzeRequest, Finding, Verdict } from "@/lib/types";
 
 export const maxDuration = 30;
 
+/* The output contract is verdict-per-claim: the model must judge EVERY
+   claim it extracts, and the server converts every non-"true" verdict into
+   an alert. This kills the lazy failure mode where a model "checked" claims
+   but emitted an empty findings list, which showed a wrong "all accurate". */
 const SYSTEM_PROMPT = `You are "Split", a strictly neutral real-time debate referee. You receive the newest slice of a live spoken debate transcript (plus earlier context). Speech-to-text is messy — no punctuation, wrong homophones, filler — read through the noise.
 
-Flag two things in the NEW text:
+Respond with JSON only: {"claims": [...], "fallacies": [...]}
 
-1. FACT CHECKS — evaluate EVERY concrete, checkable factual claim (statistics, dates, events, laws, science, history, geography).
-   - verdict "false": contradicts well-established knowledge, or a statistic far from the accepted figure. "misleading": technically true but framed to deceive. "unverifiable": a specific suspicious statistic that cannot be confirmed.
-   - Popular myths are FALSE no matter how many people repeat them, e.g.: Great Wall visible from space/the Moon; humans use 10% of their brains; goldfish 3-second memory; Einstein failed math; Napoleon unusually short; sugar makes children hyperactive; lightning never strikes twice; most body heat lost through the head; bulls enraged by red; swallowing spiders in sleep. Anything of this genre is a flag.
-   - Do NOT flag: opinions, predictions, value judgments, anecdotes, obvious hyperbole, or approximately-correct claims (rounding is fine).
-   - "correction": the correct fact, one or two sentences. "source_name"/"source_url": a real, well-known authoritative organization (WHO, BLS, NASA, FBI, ...) and its canonical URL — never invented. "search_query": 3-8 words to verify the correction via web search.
+CLAIMS — extract EVERY concrete, checkable factual claim in the NEW text (statistics, dates, events, laws, science, health, history, geography) and give each one a verdict:
+- "true": consistent with well-established knowledge. Approximately correct counts as true — reasonable rounding is fine.
+- "false": contradicts well-established knowledge, or a statistic far from the accepted figure. Popular myths are always false no matter how many people repeat them: the Great Wall visible from space or the Moon, humans use 10% of their brains, goldfish 3-second memory, Einstein failed math, Napoleon unusually short, sugar makes children hyperactive, lightning never strikes twice, most body heat lost through the head, bulls enraged by the color red, the sun orbits the Earth — and anything of that genre.
+- "misleading": technically true but framed to deceive.
+- "unverifiable": a specific suspicious statistic that cannot be confirmed.
+Do NOT list opinions, predictions, value judgments, personal anecdotes, or obvious hyperbole as claims.
+For every claim whose verdict is NOT "true", also provide: "correction" — the correct fact in one or two sentences; "source_name" and "source_url" — a real, well-known authoritative organization (WHO, BLS, NASA, FBI, Britannica, ...) and its canonical URL, never invented; "search_query" — 3-8 words to verify the correction via web search.
+"quote" is always a short verbatim excerpt from the NEW text. Only evaluate the NEW text; if it repeats a false claim from the context, flag it again.
 
-2. FALLACIES — only clear-cut cases: ad hominem, straw man, false dilemma, slippery slope, whataboutism, appeal to fear, hasty generalization, red herring, circular reasoning, appeal to authority, tu quoque. Name it and explain in one short sentence. Passionate disagreement is not a fallacy.
-
-Method — think first. Fill the JSON fields in this exact order:
-1. "analysis": scratchpad, never shown to the debaters. One terse sentence per factual claim in the NEW text ending in TRUE, FALSE, MISLEADING, or OPINION with the reason; note any fallacy too.
-2. "claims_checked": how many claims the analysis covered, including TRUE ones.
-3. "findings": an entry for EVERY claim marked FALSE or MISLEADING, plus each fallacy. A FALSE in the analysis with no matching finding is a contradiction and always wrong.
-
-Calibration: a clean slice produces zero findings — do not invent problems. Only flag the NEW text, but re-flag a false claim if the NEW text repeats it. Do not be timid: confidently wrong claims are exactly what you exist to catch. Quotes are short verbatim excerpts from the NEW text.
+FALLACIES — only clear-cut cases: ad hominem, straw man, false dilemma, slippery slope, whataboutism, appeal to fear, hasty generalization, red herring, circular reasoning, appeal to authority, tu quoque. Passionate disagreement is not a fallacy. Each entry: "fallacy_name", "quote" (verbatim), "explanation" (one short sentence).
 
 Examples:
 
 NEW text: "crime is at an all-time high right now and you know it"
-{"analysis": "Claim: crime at an all-time high — FALSE, US violent crime is near multi-decade lows.", "claims_checked": 1, "findings": [{"type": "fact_check", "quote": "crime is at an all-time high", "verdict": "false", "correction": "U.S. violent crime has fallen sharply since the early 1990s and is near multi-decade lows, not at an all-time high.", "source_name": "FBI Crime Data Explorer", "source_url": "https://cde.ucr.cjis.gov", "search_query": "US violent crime rate trend FBI"}]}
+{"claims": [{"quote": "crime is at an all-time high", "verdict": "false", "correction": "U.S. violent crime has fallen sharply since the early 1990s and is near multi-decade lows, not at an all-time high.", "source_name": "FBI Crime Data Explorer", "source_url": "https://cde.ucr.cjis.gov", "search_query": "US violent crime rate trend FBI"}], "fallacies": []}
+
+NEW text: "water boils at 100 degrees celsius at sea level"
+{"claims": [{"quote": "water boils at 100 degrees celsius at sea level", "verdict": "true"}], "fallacies": []}
 
 NEW text: "well I just think raising taxes is a terrible idea and it always backfires"
-{"analysis": "Raising taxes is terrible — OPINION. It always backfires — vague prediction, not a checkable claim.", "claims_checked": 0, "findings": []}
+{"claims": [], "fallacies": []}
 
 NEW text: "of course you'd defend him you work for him so your opinion doesn't count"
-{"analysis": "No factual claims. Dismissing the opinion because of who employs him — ad hominem.", "claims_checked": 0, "findings": [{"type": "fallacy", "fallacy_name": "ad hominem", "quote": "you work for him so your opinion doesn't count", "explanation": "It dismisses the argument by attacking the speaker's circumstances instead of the argument itself."}]}
-
-Respond with JSON only, matching this schema:
-{"analysis": string, "claims_checked": number, "findings": [
-  {"type": "fact_check", "quote": string, "verdict": "false"|"misleading"|"unverifiable", "correction": string, "source_name": string, "source_url": string, "search_query": string},
-  {"type": "fallacy", "fallacy_name": string, "quote": string, "explanation": string}
-]}`;
+{"claims": [], "fallacies": [{"fallacy_name": "ad hominem", "quote": "you work for him so your opinion doesn't count", "explanation": "It dismisses the argument by attacking the speaker's circumstances instead of the argument itself."}]}`;
 
 function buildUserPrompt(chunk: string, context?: string): string {
   const ctx = context?.trim()
-    ? `Earlier transcript (context only — do NOT flag anything in it):\n"""${context.trim()}"""\n\n`
+    ? `Earlier transcript (context only — do NOT evaluate it):\n"""${context.trim()}"""\n\n`
     : "";
   return `${ctx}NEW transcript text to analyze:\n"""${chunk.trim()}"""`;
 }
 
 const GEMINI_RESPONSE_SCHEMA = {
   type: "OBJECT",
-  // analysis first: the model must reason claim-by-claim before it commits
-  // to findings, which is what makes small models actually catch myths.
-  propertyOrdering: ["analysis", "claims_checked", "findings"],
+  propertyOrdering: ["claims", "fallacies"],
   properties: {
-    analysis: { type: "STRING" },
-    claims_checked: { type: "INTEGER" },
-    findings: {
+    claims: {
       type: "ARRAY",
       items: {
         type: "OBJECT",
+        propertyOrdering: [
+          "quote",
+          "verdict",
+          "correction",
+          "source_name",
+          "source_url",
+          "search_query",
+        ],
         properties: {
-          type: { type: "STRING", enum: ["fact_check", "fallacy"] },
           quote: { type: "STRING" },
           verdict: {
             type: "STRING",
-            enum: ["false", "misleading", "unverifiable"],
+            enum: ["true", "false", "misleading", "unverifiable"],
           },
           correction: { type: "STRING" },
           source_name: { type: "STRING" },
           source_url: { type: "STRING" },
           search_query: { type: "STRING" },
+        },
+        required: ["quote", "verdict"],
+      },
+    },
+    fallacies: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
           fallacy_name: { type: "STRING" },
+          quote: { type: "STRING" },
           explanation: { type: "STRING" },
         },
-        required: ["type", "quote"],
+        required: ["fallacy_name", "quote"],
       },
     },
   },
-  required: ["analysis", "claims_checked", "findings"],
+  required: ["claims", "fallacies"],
 };
 
 /* Tried in order; a 404 (model renamed/retired) falls through to the next. */
@@ -92,21 +102,15 @@ interface ModelReply {
   model: string;
 }
 
-async function callGemini(
-  chunk: string,
-  context?: string,
-  extra?: string
-): Promise<ModelReply> {
+async function callGemini(chunk: string, context?: string): Promise<ModelReply> {
   const key = process.env.GEMINI_API_KEY!;
-  const all = process.env.GEMINI_MODEL
+  const models = process.env.GEMINI_MODEL
     ? [process.env.GEMINI_MODEL, ...GEMINI_MODELS]
     : GEMINI_MODELS;
-  // Rescue calls get one quick attempt so two rounds fit in the function limit.
-  const models = extra ? all.slice(0, 1) : all;
 
   let lastError = "";
   let lastStatus = 502;
-  const deadline = Date.now() + (extra ? 10000 : 18000);
+  const deadline = Date.now() + 18000; // stay well under the platform timeout
   for (const model of models) {
     const budget = deadline - Date.now();
     if (budget < 2000) break;
@@ -123,16 +127,7 @@ async function callGemini(
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
             contents: [
-              {
-                role: "user",
-                parts: [
-                  {
-                    text:
-                      buildUserPrompt(chunk, context) +
-                      (extra ? `\n\nIMPORTANT: ${extra}` : ""),
-                  },
-                ],
-              },
+              { role: "user", parts: [{ text: buildUserPrompt(chunk, context) }] },
             ],
             generationConfig: {
               temperature: 0.1,
@@ -165,11 +160,7 @@ async function callGemini(
   throw Object.assign(new Error(lastError), { status: lastStatus });
 }
 
-async function callNvidiaNim(
-  chunk: string,
-  context?: string,
-  extra?: string
-): Promise<ModelReply> {
+async function callNvidiaNim(chunk: string, context?: string): Promise<ModelReply> {
   const key = process.env.NVIDIA_NIM_API_KEY!;
   const model = process.env.NVIDIA_NIM_MODEL || "minimaxai/minimax-m3";
   let res: Response;
@@ -188,12 +179,7 @@ async function callNvidiaNim(
         max_tokens: 4096,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content:
-              buildUserPrompt(chunk, context) +
-              (extra ? `\n\nIMPORTANT: ${extra}` : ""),
-          },
+          { role: "user", content: buildUserPrompt(chunk, context) },
         ],
       }),
       signal: AbortSignal.timeout(20000),
@@ -214,10 +200,13 @@ async function callNvidiaNim(
   return { text: data?.choices?.[0]?.message?.content ?? "", model };
 }
 
+interface ParsedReply {
+  claims?: unknown;
+  fallacies?: unknown;
+}
+
 /** Pull a JSON object out of a model reply that may include prose or fences. */
-function extractJson(
-  text: string
-): { findings?: unknown; claims_checked?: unknown; analysis?: unknown } | null {
+function extractJson(text: string): ParsedReply | null {
   const trimmed = text.trim();
   try {
     return JSON.parse(trimmed);
@@ -232,53 +221,99 @@ function extractJson(
   }
 }
 
-function sanitizeFindings(raw: unknown): Finding[] {
-  if (!Array.isArray(raw)) return [];
+const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
+
+/** Convert verdict-per-claim output into findings mechanically. */
+function toFindings(parsed: ParsedReply | null): {
+  findings: Finding[];
+  claimsChecked: number;
+} {
   const findings: Finding[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const f = item as Record<string, unknown>;
-    const quote = typeof f.quote === "string" ? f.quote.trim() : "";
-    if (!quote) continue;
-    const type = typeof f.type === "string" ? f.type.toLowerCase().replace(/-/g, "_") : "";
-    if (type === "fact_check") {
-      // Models sometimes capitalize despite the schema — don't drop findings over it.
-      const verdict =
-        typeof f.verdict === "string" ? f.verdict.toLowerCase().trim() : "";
-      if (verdict !== "false" && verdict !== "misleading" && verdict !== "unverifiable") continue;
-      // Lazy responses sometimes put the substance in "explanation" — don't
-      // silently drop a real finding over a missing field name.
-      const correction =
-        typeof f.correction === "string" && f.correction.trim()
-          ? f.correction.trim()
-          : typeof f.explanation === "string"
-            ? f.explanation.trim()
-            : "";
-      if (!correction) continue;
+  let claimsChecked = 0;
+
+  if (parsed && Array.isArray(parsed.claims)) {
+    for (const item of parsed.claims) {
+      if (!item || typeof item !== "object") continue;
+      const c = item as Record<string, unknown>;
+      const quote = str(c.quote);
+      const verdict = str(c.verdict).toLowerCase();
+      if (!quote || !verdict) continue;
+      claimsChecked++;
+      if (verdict !== "false" && verdict !== "misleading" && verdict !== "unverifiable") {
+        continue; // "true" (or anything unrecognized) is not an alert
+      }
       findings.push({
         type: "fact_check",
         quote,
-        verdict,
-        correction,
-        source_name: typeof f.source_name === "string" ? f.source_name.trim() : "",
-        source_url:
-          typeof f.source_url === "string" && /^https?:\/\//.test(f.source_url.trim())
-            ? f.source_url.trim()
-            : "",
-        search_query:
-          typeof f.search_query === "string" ? f.search_query.trim() : undefined,
-      });
-    } else if (type === "fallacy") {
-      if (typeof f.fallacy_name !== "string" || !f.fallacy_name.trim()) continue;
-      findings.push({
-        type: "fallacy",
-        fallacy_name: f.fallacy_name.trim(),
-        quote,
-        explanation: typeof f.explanation === "string" ? f.explanation.trim() : "",
+        verdict: verdict as Verdict,
+        correction:
+          str(c.correction) || "This claim contradicts well-established facts.",
+        source_name: str(c.source_name),
+        source_url: /^https?:\/\//.test(str(c.source_url)) ? str(c.source_url) : "",
+        search_query: str(c.search_query) || undefined,
       });
     }
   }
-  return findings.slice(0, 6);
+
+  if (parsed && Array.isArray(parsed.fallacies)) {
+    for (const item of parsed.fallacies) {
+      if (!item || typeof item !== "object") continue;
+      const f = item as Record<string, unknown>;
+      const quote = str(f.quote);
+      const name = str(f.fallacy_name);
+      if (!quote || !name) continue;
+      findings.push({
+        type: "fallacy",
+        fallacy_name: name,
+        quote,
+        explanation: str(f.explanation),
+      });
+    }
+  }
+
+  return { findings: findings.slice(0, 8), claimsChecked };
+}
+
+async function runAnalysis(useGemini: boolean, chunk: string, context?: string) {
+  const reply = useGemini
+    ? await callGemini(chunk, context)
+    : await callNvidiaNim(chunk, context);
+  const parsed = extractJson(reply.text);
+  const { findings, claimsChecked } = toFindings(parsed);
+  console.log(
+    `analyze (${reply.model}): ${claimsChecked} claims, ${findings.length} findings`
+  );
+  return { findings, claimsChecked, model: reply.model, parsed };
+}
+
+function pickProvider(requested?: string): { useGemini: boolean } | NextResponse {
+  const hasGemini = !!process.env.GEMINI_API_KEY;
+  const hasNim = !!process.env.NVIDIA_NIM_API_KEY;
+  if (!hasGemini && !hasNim) {
+    return NextResponse.json(
+      {
+        error:
+          "No AI provider configured. Set GEMINI_API_KEY (https://aistudio.google.com/apikey) or NVIDIA_NIM_API_KEY (https://build.nvidia.com) in your environment.",
+      },
+      { status: 503 }
+    );
+  }
+  if (requested === "nvidia") {
+    if (!hasNim) {
+      return NextResponse.json(
+        { error: "NVIDIA NIM not configured — set NVIDIA_NIM_API_KEY." },
+        { status: 503 }
+      );
+    }
+    return { useGemini: false };
+  }
+  if (requested === "gemini" && !hasGemini) {
+    return NextResponse.json(
+      { error: "Gemini not configured — set GEMINI_API_KEY." },
+      { status: 503 }
+    );
+  }
+  return { useGemini: hasGemini };
 }
 
 export async function POST(req: NextRequest) {
@@ -298,42 +333,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Input too long" }, { status: 413 });
   }
 
-  const hasGemini = !!process.env.GEMINI_API_KEY;
-  const hasNim = !!process.env.NVIDIA_NIM_API_KEY;
-  if (!hasGemini && !hasNim) {
-    return NextResponse.json(
-      {
-        error:
-          "No AI provider configured. Set GEMINI_API_KEY (https://aistudio.google.com/apikey) or NVIDIA_NIM_API_KEY (https://build.nvidia.com) in your environment.",
-      },
-      { status: 503 }
-    );
-  }
-
-  // Honor the provider the user picked in the UI; fall back sensibly.
-  const requested = (body as { provider?: string }).provider;
-  let useGemini = hasGemini;
-  if (requested === "nvidia") {
-    if (!hasNim) {
-      return NextResponse.json(
-        { error: "NVIDIA NIM not configured — set NVIDIA_NIM_API_KEY." },
-        { status: 503 }
-      );
-    }
-    useGemini = false;
-  } else if (requested === "gemini" && !hasGemini) {
-    return NextResponse.json(
-      { error: "Gemini not configured — set GEMINI_API_KEY." },
-      { status: 503 }
-    );
-  }
+  const picked = pickProvider(body.provider);
+  if (picked instanceof NextResponse) return picked;
 
   try {
-    const result = await runAnalysis(useGemini, chunk, context);
+    const result = await runAnalysis(picked.useGemini, chunk, context);
     return NextResponse.json({
       findings: result.findings,
       claims_checked: result.claimsChecked,
-      provider: useGemini ? "gemini" : "nvidia-nim",
+      provider: picked.useGemini ? "gemini" : "nvidia-nim",
       model: result.model,
     });
   } catch (err) {
@@ -349,88 +357,32 @@ export async function POST(req: NextRequest) {
   }
 }
 
-interface AnalysisResult {
-  findings: Finding[];
-  claimsChecked: number;
-  analysis: string;
-  model: string;
-  rescued: boolean;
-}
-
-async function runAnalysis(
-  useGemini: boolean,
-  chunk: string,
-  context?: string
-): Promise<AnalysisResult> {
-  const first = useGemini
-    ? await callGemini(chunk, context)
-    : await callNvidiaNim(chunk, context);
-  let parsed = extractJson(first.text);
-  let findings = sanitizeFindings(parsed?.findings);
-  const analysis =
-    typeof parsed?.analysis === "string" ? parsed.analysis.slice(0, 800) : "";
-  // Visible in Vercel function logs — the model's claim-by-claim reasoning.
-  if (analysis) console.log(`analysis (${first.model}):`, analysis.slice(0, 500));
-
-  // Contradiction rescue: the scratchpad says FALSE/MISLEADING but findings
-  // came back empty — the exact lazy-model failure that shows the debaters a
-  // wrong "all accurate". One follow-up call forces the conversion.
-  let rescued = false;
-  if (findings.length === 0 && /\b(FALSE|MISLEADING)\b/.test(analysis)) {
-    console.warn("contradiction: analysis flagged claims but findings empty — rescuing");
-    try {
-      const extra = `Your previous analysis of this exact text was: "${analysis}". It marked at least one claim FALSE or MISLEADING, yet you returned zero findings — a contradiction. Respond again with the same JSON schema, converting EVERY claim that analysis marked FALSE or MISLEADING into a findings entry with verdict, correction, source_name, source_url and search_query.`;
-      const second = useGemini
-        ? await callGemini(chunk, context, extra)
-        : await callNvidiaNim(chunk, context, extra);
-      const parsed2 = extractJson(second.text);
-      const findings2 = sanitizeFindings(parsed2?.findings);
-      if (findings2.length > 0) {
-        findings = findings2;
-        parsed = parsed2 ?? parsed;
-        rescued = true;
-      }
-    } catch (err) {
-      console.error("rescue pass failed:", err); // keep the first result
-    }
-  }
-
-  const claimsChecked =
-    typeof parsed?.claims_checked === "number" && parsed.claims_checked >= 0
-      ? Math.round(parsed.claims_checked)
-      : findings.filter((f) => f.type === "fact_check").length;
-  return { findings, claimsChecked, analysis, model: first.model, rescued };
-}
-
 /**
- * Self-test: open /api/analyze in a browser. Runs a blatantly false claim
- * through the full pipeline and reports the model used, its claim-by-claim
- * analysis, and whether the claim was flagged. Uses 1-2 quota requests.
+ * Self-test: open /api/analyze in a browser — add ?provider=nvidia to test
+ * NIM, or ?q=your+own+claim. Runs the full pipeline with your real keys and
+ * reports the model, the raw per-claim verdicts, and PASS/FAIL.
  */
-export async function GET() {
-  const chunk = "The sun revolves around the Earth, everyone knows that.";
-  const hasGemini = !!process.env.GEMINI_API_KEY;
-  const hasNim = !!process.env.NVIDIA_NIM_API_KEY;
-  if (!hasGemini && !hasNim) {
-    return NextResponse.json(
-      { error: "No AI provider configured — set GEMINI_API_KEY." },
-      { status: 503 }
-    );
-  }
+export async function GET(req: NextRequest) {
+  const q = req.nextUrl.searchParams.get("q");
+  const chunk = q?.trim() || "The sun revolves around the Earth, everyone knows that.";
+  const requested = req.nextUrl.searchParams.get("provider") ?? undefined;
+
+  const picked = pickProvider(requested);
+  if (picked instanceof NextResponse) return picked;
+
   try {
-    const result = await runAnalysis(hasGemini, chunk);
+    const result = await runAnalysis(picked.useGemini, chunk);
     return NextResponse.json({
       verdict:
         result.findings.length > 0
-          ? "PASS — the false claim was flagged"
-          : "FAIL — the false claim was NOT flagged (share this JSON when reporting)",
+          ? "PASS — the claim was flagged"
+          : "FAIL — nothing flagged (share this JSON when reporting)",
       test_input: chunk,
+      provider: picked.useGemini ? "gemini" : "nvidia-nim",
       model: result.model,
-      provider: hasGemini ? "gemini" : "nvidia-nim",
-      rescued: result.rescued,
       claims_checked: result.claimsChecked,
       findings: result.findings,
-      analysis: result.analysis,
+      raw_claims: (result.parsed as ParsedReply | null)?.claims ?? null,
     });
   } catch (err) {
     return NextResponse.json(
