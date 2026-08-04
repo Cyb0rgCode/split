@@ -162,7 +162,7 @@ async function callGemini(chunk: string, context?: string): Promise<ModelReply> 
 
 async function callNvidiaNim(chunk: string, context?: string): Promise<ModelReply> {
   const key = process.env.NVIDIA_NIM_API_KEY!;
-  const model = process.env.NVIDIA_NIM_MODEL || "minimaxai/minimax-m3";
+  const model = process.env.NVIDIA_NIM_MODEL || "deepseek-ai/deepseek-v4-flash";
   let res: Response;
   try {
     res = await fetch("https://integrate.api.nvidia.com/v1/chat/completions", {
@@ -174,8 +174,8 @@ async function callNvidiaNim(chunk: string, context?: string): Promise<ModelRepl
       body: JSON.stringify({
         model,
         temperature: 0.1,
-        // Reasoning models (MiniMax M3) burn tokens thinking before the JSON
-        // answer — leave generous room so the answer isn't truncated.
+        // Reasoning models burn tokens thinking before the JSON answer —
+        // leave generous room so the answer isn't truncated.
         max_tokens: 4096,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },

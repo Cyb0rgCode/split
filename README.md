@@ -53,12 +53,12 @@ Set **one** provider in `.env.local`:
 | Variable | Where to get it | Default model |
 | --- | --- | --- |
 | `GEMINI_API_KEY` | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (free) | `gemini-3.1-flash-lite` |
-| `NVIDIA_NIM_API_KEY` | [build.nvidia.com](https://build.nvidia.com) (free credits) | `minimaxai/minimax-m3` |
+| `NVIDIA_NIM_API_KEY` | [build.nvidia.com](https://build.nvidia.com) (free credits) | `deepseek-ai/deepseek-v4-flash` |
 
 With both keys set, a **🧠 button** in the app switches the fact-checking AI
 between Gemini and NVIDIA live (the choice is remembered on the device).
 Gemini's free tier renews daily; NIM's free credits are a one-time trial
-pool, but MiniMax M3 is a much stronger reasoner. Override models with
+pool, but DeepSeek V4 Flash is a stronger reasoner. Override models with
 `GEMINI_MODEL` / `NVIDIA_NIM_MODEL` if you like.
 
 ### Web search for sources (optional, free)
